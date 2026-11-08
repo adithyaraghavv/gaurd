@@ -133,6 +133,21 @@ guard scan                 # code + live checks against staging
 
 Set `GUARD_GATE=off` to switch the automatic hook off for a session. The hook does nothing in projects without a `guard.config.json`, and nothing when the repo has no changes.
 
+### Claude Code in the browser (cloud sessions)
+
+A browser session (claude.ai/code) runs in the cloud, so it cannot see the `~/.claude` folder on your computer. Install guard **into the project** instead, so the command travels with the repo:
+
+```bash
+cd your-app
+git checkout -b guard-test
+guard setup --project --repo <your-username>/guard
+git add .claude CLAUDE.md .gitignore
+git commit -m "Add guard"
+git push -u origin guard-test
+```
+
+Then start a **new** browser session on that repo and branch, and type `/guard`. Because of `--repo`, the command knows how to install guard inside the cloud session on its own: it adds your guard repo to the session (read access), clones it and runs `pip install`. Nothing else to set up.
+
 ### What a session looks like
 
 ```
@@ -282,7 +297,7 @@ guard/
 │   ├── findings.py       # the Finding record
 │   ├── files.py          # source-file walker
 │   └── checks/           # one file per check
-├── tests/                # 63 unit tests
+├── tests/                # 67 unit tests
 ├── .github/workflows/guard.yml
 ├── Dockerfile
 ├── TRUST.md              # what guard does and does not protect against
@@ -321,7 +336,7 @@ Register it in `guard/checks/__init__.py` by adding it to `ALL_CHECKS`. If it wo
 - The `ai` check is partly heuristic (pattern matching over source), so expect some false positives and misses. `db_rules` reads only `.sql` files, not policies created in a dashboard.
 
 **Verification status:**
-- 63 unit tests pass.
+- 67 unit tests pass.
 - The fix loop, give-up limit and summary were simulated end to end through `guard gate`.
 - The live checks were tested against a deliberately vulnerable local server.
 - Not yet verified: the Stop hook inside a live Claude Code session, and the semgrep / gitleaks / trivy wrappers against the real tools (they are tested on sample output only).

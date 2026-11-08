@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from guard.assets import HOOK_COMMAND, RULES_START
-from guard.claude_setup import add_hook, add_rules, install
+from guard.claude_setup import add_hook, add_rules, ensure_gitignore, install
 from guard.cli import main
 
 
@@ -61,6 +61,35 @@ class SetupTests(unittest.TestCase):
             p.write_text("{ not json")
             self.assertIn("not valid JSON", add_hook(p))
             self.assertEqual(p.read_text(), "{ not json")
+
+    def test_repo_adds_self_install_steps(self):
+        with tempfile.TemporaryDirectory() as d:
+            claude = Path(d) / ".claude"
+            install(claude, claude / "CLAUDE.md", repo="adithyaraghavv/gaurd")
+            text = (claude / "commands" / "guard.md").read_text()
+            self.assertIn("git clone --depth 1 https://github.com/adithyaraghavv/gaurd", text)
+            self.assertIn("add_repo", text)
+
+    def test_without_repo_no_clone_step(self):
+        with tempfile.TemporaryDirectory() as d:
+            claude = Path(d) / ".claude"
+            install(claude, claude / "CLAUDE.md")
+            self.assertNotIn("git clone", (claude / "commands" / "guard.md").read_text())
+
+    def test_bad_repo_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError):
+                install(Path(d) / ".claude", Path(d) / "CLAUDE.md", repo="bad repo; rm -rf /")
+            self.assertEqual(main(["setup", "--home", d, "--repo", "not valid"]), 2)
+
+    def test_gitignore_idempotent_and_preserves(self):
+        with tempfile.TemporaryDirectory() as d:
+            g = Path(d) / ".gitignore"
+            g.write_text("node_modules/")
+            ensure_gitignore(g)
+            ensure_gitignore(g)
+            lines = g.read_text().splitlines()
+            self.assertEqual(lines, ["node_modules/", "guard_out/", "guard.config.json"])
 
     def test_cli_setup_with_home(self):
         with tempfile.TemporaryDirectory() as d:

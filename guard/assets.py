@@ -2,16 +2,28 @@
 after a normal pip install (no data files to lose)."""
 from __future__ import annotations
 
-COMMAND_MD = """---
+_HEAD = """---
 description: Full bug and security check, fix everything, re-test until clean, then summarize
 ---
 
 Run guard's full quality and security loop on this repo. Maximum 5 rounds.
 
 First-time setup in this repo (skip any step that is already done):
-1. Run `guard --version`. If the command is not found, stop and tell me to install
+"""
+
+_INSTALL_PLAIN = """1. Run `guard --version`. If the command is not found, stop and tell me to install
    guard (`pip install` it from my guard repo), then try again.
-2. If `guard.config.json` does not exist, run `guard init`.
+"""
+
+_INSTALL_FROM_REPO = """1. Run `guard --version`. If the command is not found, install guard from my repo
+   `{repo}` (private; read access only):
+   a. If you have an `add_repo` tool, use it to add `{repo}` to this session (read access).
+   b. Run `git clone --depth 1 https://github.com/{repo} /tmp/guard-src`
+   c. Run `pip install /tmp/guard-src` (add `--break-system-packages` if pip refuses).
+   d. Run `guard --version` to confirm. If any step fails, stop and tell me exactly what failed.
+"""
+
+_REST = """2. If `guard.config.json` does not exist, run `guard init`.
 3. Make sure `.gitignore` contains the lines `guard_out/` and `guard.config.json`.
    Add any that are missing.
 
@@ -38,6 +50,16 @@ Finish with a plain-English summary for me (use `guard_out/summary.md`):
 - anything still open, and why, with your recommendation
 - what could not be verified
 """
+
+
+def command_md(repo: str | None = None) -> str:
+    """The /guard command text. With `repo` (owner/name), the command can install
+    guard itself in cloud sessions where it is not preinstalled."""
+    install = _INSTALL_FROM_REPO.format(repo=repo) if repo else _INSTALL_PLAIN
+    return _HEAD + install + _REST
+
+
+COMMAND_MD = command_md()
 
 RULES_START = "<!-- guard:rules:start -->"
 RULES_END = "<!-- guard:rules:end -->"
@@ -66,3 +88,5 @@ RULES_MD = f"""{RULES_START}
 
 HOOK_COMMAND = "guard gate"
 HOOK_ENTRY = {"hooks": [{"type": "command", "command": HOOK_COMMAND, "timeout": 600}]}
+
+GITIGNORE_LINES = ["guard_out/", "guard.config.json"]

@@ -131,19 +131,33 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument("--no-rules", action="store_true", help="do not add the guard rules to CLAUDE.md")
     st.add_argument("--project", action="store_true",
                     help="install into the current project (./.claude) instead of your user account")
+    st.add_argument("--repo", metavar="OWNER/NAME",
+                    help="GitHub repo that holds guard; lets /guard install guard itself in cloud sessions")
     st.add_argument("--home", help=argparse.SUPPRESS)
 
     args = p.parse_args(argv)
 
     if args.cmd == "setup":
+        gitignore = None
         if args.project:
             claude_dir, rules_path = Path.cwd() / ".claude", Path.cwd() / "CLAUDE.md"
+            gitignore = Path.cwd() / ".gitignore"
         else:
             claude_dir = (Path(args.home) if args.home else Path.home()) / ".claude"
             rules_path = claude_dir / "CLAUDE.md"
-        for line in install(claude_dir, rules_path, hook=args.hook, rules=not args.no_rules):
+        try:
+            lines = install(claude_dir, rules_path, hook=args.hook, rules=not args.no_rules,
+                            repo=args.repo, gitignore=gitignore)
+        except ValueError as e:
+            print(f"setup error: {e}", file=sys.stderr)
+            return 2
+        for line in lines:
             print(line)
-        print("\nDone. Open Claude Code in any project and type /guard")
+        if args.project:
+            print("\nDone. Commit and push .claude/ and CLAUDE.md, then start a NEW Claude Code session "
+                  "on that branch and type /guard")
+        else:
+            print("\nDone. Start a NEW Claude Code session in any project and type /guard")
         return 0
 
     if args.cmd == "init":

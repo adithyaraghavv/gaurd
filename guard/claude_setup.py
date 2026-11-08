@@ -3,9 +3,12 @@ hook) for Claude Code, either for your user account or for one project."""
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
-from .assets import COMMAND_MD, HOOK_COMMAND, HOOK_ENTRY, RULES_MD, RULES_START
+from .assets import GITIGNORE_LINES, HOOK_COMMAND, HOOK_ENTRY, RULES_MD, RULES_START, command_md
+
+REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
 def add_hook(settings_path: Path) -> str:
@@ -37,14 +40,30 @@ def add_rules(path: Path) -> str:
     return f"added rules to {path}"
 
 
-def install(claude_dir: Path, rules_path: Path, hook: bool = False, rules: bool = True) -> list[str]:
+def ensure_gitignore(path: Path) -> str:
+    existing = path.read_text() if path.exists() else ""
+    have = {line.strip() for line in existing.splitlines()}
+    missing = [l for l in GITIGNORE_LINES if l not in have]
+    if not missing:
+        return f"{path} already ignores guard files"
+    prefix = "" if not existing or existing.endswith("\n") else "\n"
+    path.write_text(existing + prefix + "\n".join(missing) + "\n")
+    return f"added {', '.join(missing)} to {path}"
+
+
+def install(claude_dir: Path, rules_path: Path, hook: bool = False, rules: bool = True,
+            repo: str | None = None, gitignore: Path | None = None) -> list[str]:
+    if repo is not None and not REPO_RE.match(repo):
+        raise ValueError(f"repo must look like owner/name, got: {repo!r}")
     done: list[str] = []
     cmd = claude_dir / "commands" / "guard.md"
     cmd.parent.mkdir(parents=True, exist_ok=True)
-    cmd.write_text(COMMAND_MD)
+    cmd.write_text(command_md(repo))
     done.append(f"installed /guard command: {cmd}")
     if rules:
         done.append(add_rules(rules_path))
     if hook:
         done.append(add_hook(claude_dir / "settings.json"))
+    if gitignore is not None:
+        done.append(ensure_gitignore(gitignore))
     return done
