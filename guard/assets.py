@@ -27,9 +27,12 @@ _REST = """2. If `guard.config.json` does not exist, run `guard init`.
 3. Make sure `.gitignore` contains the lines `guard_out/` and `guard.config.json`.
    Add any that are missing.
 
-Round 0: review the changed code (`git diff` against the main branch) for bugs,
+Round 0: review only the changed code, to save usage. Use `git diff` against the main branch
+(or `git diff HEAD~5` / the files changed on this branch if there is no main). Look for bugs,
 unhandled errors, edge cases, missing input validation and authorization gaps
 (data not scoped to the caller, missing auth checks, client-trusted ids). Fix what you find.
+If there is no diff to review, do NOT read the whole codebase; rely on the scan and tell me
+I can ask for a full review. Do not run the project's full test suite unless you changed code.
 
 Then repeat until clean:
 1. Run `guard scan --no-live`. Only run live checks (`guard scan`) if

@@ -189,5 +189,41 @@ class LoopTests(unittest.TestCase):
             self.assertEqual(r["seen_total"], 0)
 
 
+
+
+class DbRulesCrossFileTests(unittest.TestCase):
+    def test_loop_enabled_rls_counts(self):
+        import tempfile, pathlib
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as d:
+            m = pathlib.Path(d) / "migrations"
+            m.mkdir()
+            (m / "0001.sql").write_text("create table public.a (id int); create table public.b (id int);")
+            (m / "0002.sql").write_text("""do $$ declare t text; begin
+              foreach t in array array['a','b'] loop
+                execute format('alter table public.%I enable row level security', t);
+              end loop; end $$;""")
+            self.assertEqual(db_rules.run(SimpleNamespace(source_dir=d), None), [])
+
+    def test_later_file_enable_counts_but_unprotected_still_flagged(self):
+        import tempfile, pathlib
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as d:
+            m = pathlib.Path(d)
+            (m / "1.sql").write_text("create table a (id int); create table c (id int);")
+            (m / "2.sql").write_text("alter table a enable row level security;")
+            f = db_rules.run(SimpleNamespace(source_dir=d), None)
+            self.assertEqual([x.title for x in f], ["Table 'c' has no row-level security"])
+
+
+class HardKeyTests(unittest.TestCase):
+    def test_test_files_and_dummy_keys_ignored_real_one_flagged(self):
+        from guard.checks import ai
+        real = 'KEY = "sk-ant-api03-' + "aB3dE5fG7hJ9kL1mN3pQ" + '"'
+        self.assertTrue(ai.evaluate_static("app/config.py", real))
+        self.assertEqual(ai.evaluate_static("tests/test_logs.py", real), [])
+        self.assertEqual(ai.evaluate_static("app/c.py", 'K = "sk-ant-test-xxxxxxxxxxxxxxxxxxxxxxxx"'), [])
+
+
 if __name__ == "__main__":
     unittest.main()
