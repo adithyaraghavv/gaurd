@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "guard gate",
+            "timeout": 600
+          }
+        ]
+      }
+    ]
+  }
+}

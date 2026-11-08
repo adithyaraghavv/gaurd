@@ -1,0 +1,6 @@
+guard.config.json
+guard_out/
+__pycache__/
+*.egg-info/
+.env
+build/

@@ -1,0 +1,14 @@
+{
+  "base_url": "https://staging.yourapp.example",
+  "allowed_hosts": ["staging.yourapp.example"],
+  "allow_production": false,
+  "source_dir": ".",
+  "tenant_a_token": "ENV:TENANT_A_TOKEN",
+  "tenant_b_token": "ENV:TENANT_B_TOKEN",
+  "tenant_a_resources": ["/api/items/123", "/api/orders/456"],
+  "probe_paths": ["/", "/api/health", "/api/items"],
+  "injection_params": ["q", "search", "id"],
+  "rate_limit_path": "/api/auth/login",
+  "rate_limit_attempts": 30,
+  "fail_on": "high"
+}
