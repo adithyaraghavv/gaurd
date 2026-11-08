@@ -9,6 +9,7 @@ from pathlib import Path
 
 from . import __version__, report
 from .checks import ALL_CHECKS, OFFLINE_OK
+from .claude_setup import install
 from .config import DEFAULT_CONFIG, Config
 from .loop import decide, record_run, write_fix_tasks, write_summary
 from .runners import run_all
@@ -63,6 +64,8 @@ def cmd_gate(args) -> int:
     except OSError:
         pass
     out = Path(args.out)
+    if not Path(args.config).exists():
+        return 0  # project has not opted in to guard (no config): stay silent
     state_path = out / "gate_state.json"
     try:
         state = json.loads(state_path.read_text())
@@ -71,7 +74,7 @@ def cmd_gate(args) -> int:
     if not state and not _has_changes():
         return 0
     try:
-        cfg = Config.load(args.config) if Path(args.config).exists() else Config()
+        cfg = Config.load(args.config)
     except (OSError, ValueError) as e:
         print(f"guard gate: config error: {e}", file=sys.stderr)
         return 0
@@ -122,7 +125,26 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("init", help="write a starter guard.config.json")
 
+    st = sub.add_parser("setup", help="install the /guard command for Claude Code")
+    st.add_argument("--hook", action="store_true",
+                    help="also add the automatic Stop hook (runs in projects that have guard.config.json)")
+    st.add_argument("--no-rules", action="store_true", help="do not add the guard rules to CLAUDE.md")
+    st.add_argument("--project", action="store_true",
+                    help="install into the current project (./.claude) instead of your user account")
+    st.add_argument("--home", help=argparse.SUPPRESS)
+
     args = p.parse_args(argv)
+
+    if args.cmd == "setup":
+        if args.project:
+            claude_dir, rules_path = Path.cwd() / ".claude", Path.cwd() / "CLAUDE.md"
+        else:
+            claude_dir = (Path(args.home) if args.home else Path.home()) / ".claude"
+            rules_path = claude_dir / "CLAUDE.md"
+        for line in install(claude_dir, rules_path, hook=args.hook, rules=not args.no_rules):
+            print(line)
+        print("\nDone. Open Claude Code in any project and type /guard")
+        return 0
 
     if args.cmd == "init":
         dest = Path("guard.config.json")

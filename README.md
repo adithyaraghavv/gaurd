@@ -88,53 +88,50 @@ Every network request goes through one gate, the scope guard. If a host is not i
 
 ## Quick start
 
-**Requirements:** Python 3.10 or newer. The scanners semgrep, gitleaks and trivy are optional; every other check works without them.
+Install once, then use `/guard` in any project.
 
 ```bash
-# 1. Install guard (from a local copy, or straight from your GitHub repo)
+# 1. Install guard (use your repo's address)
+git clone https://github.com/<your-username>/guard.git
 pip install ./guard
-# pip install git+https://github.com/<your-username>/guard.git
 
-# 2. In the app you want to test
+# 2. One-time Claude Code setup: installs the /guard command for every project
+guard setup
+```
+
+That is the whole setup. From now on, in any project:
+
+1. Open Claude Code in the project folder.
+2. Type `/guard`.
+
+The first time in a project, `/guard` sets itself up (runs `guard init`, adds guard's files to `.gitignore`) and then runs the full loop. Nothing needs copying into your apps.
+
+**Requirements:** Python 3.10 or newer. The scanners semgrep, gitleaks and trivy are optional; every other check works without them.
+
+**Without Claude Code**, use it as a plain command line tool:
+
+```bash
 cd your-app
-guard init                 # writes guard.config.json
-
-# 3. Edit guard.config.json: staging URL, allowed host, test tokens, routes
-
-# 4. Run it
+guard init                 # writes guard.config.json (edit your staging URL, tokens, routes)
 guard scan --no-live       # code only: safe to run anywhere
 guard scan                 # code + live checks against staging
-```
-
-Add these lines to the app's `.gitignore`, since the config holds your staging details and may reference tokens:
-
-```
-guard_out/
-guard.config.json
 ```
 
 ---
 
 ## Using guard with Claude Code
 
-Copy the templates into your app once:
+`guard setup` installs these into your user-level Claude Code folder (`~/.claude/`), so they apply to every project:
 
-```bash
-cp /path/to/guard/templates/CLAUDE.md .
-cp -r /path/to/guard/templates/.claude .
-```
-
-If your app already has a `.claude/settings.json`, merge the `hooks` block in instead of overwriting.
-
-You get three things:
-
-| What | How it runs | What it does |
+| What | Where | What it does |
 |---|---|---|
-| `CLAUDE.md` | Read by Claude every session | Standing security and quality rules, including "do not weaken guard to hide a finding" |
-| **Stop hook** (`.claude/settings.json`) | Automatically when Claude finishes | Runs `guard gate`; blocks the stop and drives the fix loop |
-| `/guard` command (`.claude/commands/guard.md`) | You type `/guard` | Runs the full loop on demand, including live staging checks if you confirm they are safe, and ends with the summary |
+| `/guard` command | `~/.claude/commands/guard.md` | You type `/guard`; Claude sets guard up in the project if needed and runs the full fix loop, ending with the summary |
+| Rules | A marked block in `~/.claude/CLAUDE.md` | Standing security and quality rules, including "do not weaken guard to hide a finding" (skip with `--no-rules`) |
+| **Stop hook** (optional) | `~/.claude/settings.json` | Added with `guard setup --hook`. Runs `guard gate` whenever Claude finishes, in projects that have a `guard.config.json`, and drives the fix loop automatically |
 
-Set `GUARD_GATE=off` to switch the automatic hook off for a session.
+`guard setup --project` installs the same things into the current project (`./.claude`) instead, so teammates who clone the repo get them. The setup is safe to re-run: it never overwrites your other settings and never adds anything twice.
+
+Set `GUARD_GATE=off` to switch the automatic hook off for a session. The hook does nothing in projects without a `guard.config.json`, and nothing when the repo has no changes.
 
 ### What a session looks like
 
@@ -148,6 +145,8 @@ Hook:    All blocking issues fixed after 2 rounds. Present the summary.
 Claude:  Found 2 high-severity issues, fixed both, 2 rounds, nothing left open,
          and here is what guard could not verify: ...
 ```
+
+Or type `/guard` yourself at any time to run the whole loop on demand, including live staging checks if you confirm they are safe.
 
 ---
 
@@ -272,7 +271,9 @@ Only test systems you own or have written permission to test.
 ```
 guard/
 ├── guard/
-│   ├── cli.py            # commands: init, scan, gate
+│   ├── cli.py            # commands: init, scan, gate, setup
+│   ├── claude_setup.py   # `guard setup`: installs /guard, rules and hook for Claude Code
+│   ├── assets.py         # the text that setup installs
 │   ├── config.py         # settings and the starter config
 │   ├── scope.py          # scope guard and HTTP client
 │   ├── loop.py           # fix-loop memory, fix_tasks, summary, stop decisions
@@ -281,10 +282,7 @@ guard/
 │   ├── findings.py       # the Finding record
 │   ├── files.py          # source-file walker
 │   └── checks/           # one file per check
-├── templates/            # copy these into your apps
-│   ├── CLAUDE.md
-│   └── .claude/          # settings.json (hook) and commands/guard.md
-├── tests/                # 56 unit tests
+├── tests/                # 63 unit tests
 ├── .github/workflows/guard.yml
 ├── Dockerfile
 ├── TRUST.md              # what guard does and does not protect against
@@ -323,7 +321,7 @@ Register it in `guard/checks/__init__.py` by adding it to `ALL_CHECKS`. If it wo
 - The `ai` check is partly heuristic (pattern matching over source), so expect some false positives and misses. `db_rules` reads only `.sql` files, not policies created in a dashboard.
 
 **Verification status:**
-- 56 unit tests pass.
+- 63 unit tests pass.
 - The fix loop, give-up limit and summary were simulated end to end through `guard gate`.
 - The live checks were tested against a deliberately vulnerable local server.
 - Not yet verified: the Stop hook inside a live Claude Code session, and the semgrep / gitleaks / trivy wrappers against the real tools (they are tested on sample output only).
