@@ -9,6 +9,7 @@ import base64
 import json
 import time
 
+from ..coverage import Skipped
 from ..findings import Finding
 
 OK = range(200, 300)
@@ -73,7 +74,7 @@ def forgeries(token: str) -> list[tuple[str, str]]:
 def run(cfg, http) -> list[Finding]:
     tok = cfg.tenant_a_token
     if not tok:
-        return []
+        raise Skipped("no tenant_a_token set, so there is no token to inspect", applicable=False)
     findings = evaluate_token(tok)
     if http is not None and cfg.tenant_a_resources:
         url = cfg.base_url.rstrip("/") + cfg.tenant_a_resources[0]

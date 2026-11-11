@@ -41,7 +41,8 @@ Then repeat until clean:
 2. Read `guard_out/fix_tasks.md`.
 3. If there are no blocking issues, stop the loop.
 4. Otherwise fix every blocking issue at its root cause. Do not edit guard,
-   its config or scope, and do not add ignore comments to hide findings.
+   its config or scope, and do not add ignore comments to hide findings. If a finding is a false
+   positive or a deliberate choice, tell me and propose an `accepted_risks` entry; I add it myself.
 5. Go back to step 1 so the fixes are tested again.
 
 Stop early if a round fixes nothing (no progress) or after 5 rounds.
@@ -51,7 +52,7 @@ Finish with a plain-English summary for me (use `guard_out/summary.md`):
 - what you changed to fix each issue
 - how many rounds it took and whether the final scan is clean
 - anything still open, and why, with your recommendation
-- what could not be verified
+- what could not be verified, including every check marked SKIPPED in the table at the top of the summary
 """
 
 
@@ -75,7 +76,7 @@ RULES_MD = f"""{RULES_START}
 - If a guard Stop hook blocks you, read `guard_out/fix_tasks.md`, fix every issue at
   its root cause, and keep going until the check passes. Never edit guard, its config
   or its scope, and never add ignore comments just to hide a finding. If something is
-  a false positive, say so and explain why.
+  a false positive, say so and explain why, and propose an `accepted_risks` entry for the owner to add.
 - When the check passes after fixes, give the user a plain-English summary using
   `guard_out/summary.md`: what was found, what you changed for each issue, how many
   rounds it took, what is left for them to decide, what you could not verify.

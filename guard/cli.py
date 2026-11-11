@@ -7,40 +7,61 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import __version__, report
-from .checks import ALL_CHECKS, OFFLINE_OK
+from . import __version__, accept, report
+from .checks import ALL_CHECKS, OFFLINE_OK, PROBE_PATH_CHECKS
 from .claude_setup import install
 from .config import DEFAULT_CONFIG, Config
+from .coverage import NA, OFF, RAN, SKIPPED, TOOLS, Coverage, Skipped
 from .loop import decide, record_run, write_fix_tasks, write_summary
-from .runners import run_all
+from .runners import INSTALL_HINT, scan_tools
 from .scope import Scope, ScopeError, ScopedHTTP
 
 
 def _run_stages(cfg: Config, stages: set[str], http):
-    findings, notes = [], []
+    """Run the selected checks. Returns (findings, notes, coverage): coverage says, for every check, whether it
+    ran, was skipped (and why) or was switched off, so a skipped check can never pass as a clean one."""
+    findings: list = []
+    coverage: list[Coverage] = []
     if "static" in stages:
-        f, n = run_all(cfg.source_dir)
+        f, cov = scan_tools(cfg.source_dir)
         findings += f
-        notes += n
+        coverage += cov
+    else:
+        coverage.append(Coverage("static scanners (semgrep, gitleaks, trivy)", OFF, "not selected (--only)"))
     for name, fn in ALL_CHECKS.items():
         if name not in stages:
+            coverage.append(Coverage(name, OFF, "not selected (--only)"))
             continue
         if http is None and name not in OFFLINE_OK:
+            coverage.append(Coverage(name, OFF, "live check; live checks are off (--no-live, or the automatic gate)"))
             continue
-        findings += fn(cfg, http)  # ScopeError propagates to the caller
-    return findings, notes
+        try:
+            found = fn(cfg, http)  # ScopeError propagates to the caller
+        except Skipped as e:
+            coverage.append(Coverage(name, SKIPPED if e.applicable else NA, e.reason))
+            continue
+        findings += found
+        detail = "; ".join(f.title for f in found if "coverage-note" in f.tags)
+        if name in PROBE_PATH_CHECKS and len(cfg.probe_paths) > cfg.max_probe_paths and http is not None:
+            cut = f"checked the first {cfg.max_probe_paths} of {len(cfg.probe_paths)} probe_paths " \
+                  f"(raise max_probe_paths to check the rest)"
+            detail = f"{detail}; {cut}" if detail else cut
+        if http is None and name in {"jwt", "ai"}:
+            detail = (detail + "; " if detail else "") + "code part only (live probes are off)"
+        coverage.append(Coverage(name, RAN, detail))
+    active, accepted, notes = accept.apply(findings, cfg.accepted_risks)
+    return active, notes, coverage, accepted
 
 
-def _finish(cfg: Config, findings, notes, out_dir: str) -> dict:
+def _finish(cfg: Config, findings, notes, out_dir: str, coverage=None, accepted=None) -> dict:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "report.md").write_text(report.to_markdown(findings, notes))
-    (out / "report.json").write_text(report.to_json(findings, notes))
+    (out / "report.md").write_text(report.to_markdown(findings, notes, coverage, accepted))
+    (out / "report.json").write_text(report.to_json(findings, notes, coverage, accepted))
     (out / "report.sarif").write_text(report.to_sarif(findings))
-    result = record_run(out_dir, findings, cfg.fail_on)
+    result = record_run(out_dir, findings, cfg.fail_on, coverage, accepted, notes)
     write_fix_tasks(out_dir, result)
-    if result["seen_total"]:
-        write_summary(out_dir, result, cfg.fail_on)
+    write_summary(out_dir, result, cfg.fail_on)  # always: a stale summary from an earlier session must not linger
     return result
 
 
@@ -79,8 +100,8 @@ def cmd_gate(args) -> int:
         print(f"guard gate: config error: {e}", file=sys.stderr)
         return 0
     stages = set(ALL_CHECKS) | {"static"}
-    findings, notes = _run_stages(cfg, stages, None)  # offline only: static + code checks
-    result = _finish(cfg, findings, notes, args.out)
+    findings, notes, coverage, accepted = _run_stages(cfg, stages, None)  # offline only: static + code checks
+    result = _finish(cfg, findings, notes, args.out, coverage, accepted)
     code, kind, new_state = decide(len(result["blocking"]), state, cfg.max_fix_rounds,
                                    had_issues=result["had_blocking"])
     out.mkdir(parents=True, exist_ok=True)
@@ -125,6 +146,9 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("init", help="write a starter guard.config.json")
 
+    d = sub.add_parser("doctor", help="show what is installed, configured and missing")
+    d.add_argument("-c", "--config", default="guard.config.json")
+
     st = sub.add_parser("setup", help="install the /guard command for Claude Code")
     st.add_argument("--hook", action="store_true",
                     help="also add the automatic Stop hook (runs in projects that have guard.config.json)")
@@ -166,11 +190,16 @@ def main(argv: list[str] | None = None) -> int:
             print("guard.config.json already exists", file=sys.stderr)
             return 2
         dest.write_text(json.dumps(DEFAULT_CONFIG, indent=2) + "\n")
-        print("wrote guard.config.json; edit it before scanning")
+        print("wrote guard.config.json with made-up staging hosts and routes.\n"
+              "Edit it, then set \"setup_complete\": true. Live scans are refused until you do.\n"
+              "Code-only scans work right away: guard scan --no-live")
         return 0
 
     if args.cmd == "gate":
         return cmd_gate(args)
+
+    if args.cmd == "doctor":
+        return cmd_doctor(args)
 
     try:
         cfg = Config.load(args.config)
@@ -179,17 +208,78 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     stages = set(args.only) if args.only else {"static", *ALL_CHECKS}
+    wants_live = not args.no_live and any(st not in OFFLINE_OK | {"static"} for st in stages)
+    if wants_live and (why := cfg.live_blocker()):
+        # Nothing has been sent. The starter config names a host you do not control, so a live scan is refused
+        # until you have reviewed it.
+        print(f"LIVE SCAN REFUSED: {why}\nCode-only checks still work: guard scan --no-live", file=sys.stderr)
+        return 3
     http = None if args.no_live else ScopedHTTP(Scope(cfg.allowed_hosts, cfg.allow_production))
     try:
-        findings, notes = _run_stages(cfg, stages, http)
+        findings, notes, coverage, accepted = _run_stages(cfg, stages, http)
     except ScopeError as e:
         print(f"SCOPE BLOCKED: {e}", file=sys.stderr)
         return 3
 
-    result = _finish(cfg, findings, notes, args.out)
-    print(f"{len(findings)} findings, {len(result['blocking'])} blocking; reports in {args.out}/ "
-          f"(fix list: {args.out}/fix_tasks.md)")
+    result = _finish(cfg, findings, notes, args.out, coverage, accepted)
+    line = (f"{len(findings)} findings, {len(result['blocking'])} blocking; reports in {args.out}/ "
+            f"(fix list: {args.out}/fix_tasks.md)")
+    if accepted:
+        line += f"; {len(accepted)} accepted risk(s) listed separately"
+    print(line)
+    if result["gaps"]:
+        print(f"WARNING: {len(result['gaps'])} check(s) did not run, so this is not a full clean: "
+              + ", ".join(c.name for c in result["gaps"]) + f". See {args.out}/summary.md or run `guard doctor`.")
     return 1 if result["blocking"] else 0
+
+
+def cmd_doctor(args) -> int:
+    """What is installed, what is configured, and what is missing. Changes nothing and sends nothing."""
+    import shutil
+
+    print("guard doctor\n")
+    print("Scanners (optional; without one, its kind of problem is not looked for and reports say so):")
+    for tool, what in TOOLS.items():
+        path = shutil.which(tool)
+        print(f"  {tool:9} {what:16} " + (f"installed ({path})" if path else f"MISSING. Install: {INSTALL_HINT[tool]}"))
+    print("  guard does not download scanners for you: a pinned, checksum-verified installer needs checksums\n"
+          "  that only you should vouch for. Pin the version you install and verify it yourself.\n")
+    if not Path(args.config).exists():
+        print(f"Config: {args.config} not found. Run `guard init`. Code-only scans (guard scan --no-live) work without it.")
+        return 0
+    try:
+        cfg = Config.load(args.config)
+    except (OSError, ValueError) as e:
+        print(f"Config: {args.config} has an error: {e}", file=sys.stderr)
+        return 2
+    why = cfg.live_blocker()
+    print(f"Config: {args.config}")
+    print(f"  live scans: " + ("ready" if not why else f"REFUSED. {why}"))
+    print(f"  allowed_hosts: {', '.join(cfg.allowed_hosts) or 'none'}")
+    tokens = [("tenant_a_token", cfg.tenant_a_token), ("tenant_b_token", cfg.tenant_b_token),
+              *sorted(cfg.tokens.items())]
+    print("  tokens: " + ", ".join(f"{n} {'set' if v else 'NOT SET'}" for n, v in tokens))
+    if cfg.accepted_risks:
+        print(f"  accepted risks: {len(cfg.accepted_risks)}")
+    print("\nChecks (what a full scan would do with this config):")
+    ready = {
+        "static": ("see scanners above", all(shutil.which(t) for t in TOOLS)),
+        "tenant": ("needs tenant_a_token, tenant_b_token, tenant_a_resources",
+                   bool(cfg.tenant_a_token and cfg.tenant_b_token and cfg.tenant_a_resources)),
+        "access": ("needs access_checks (and a token per caller)", bool(cfg.access_checks)),
+        "injection": ("needs injection_params or injection_targets", bool(cfg.injection_params or cfg.injection_targets)),
+        "mass_assignment": ("needs mass_assignment_targets", bool(cfg.mass_assignment_targets)),
+        "upload": ("needs upload_path", bool(cfg.upload_path)),
+        "ratelimit": ("needs rate_limit_path", bool(cfg.rate_limit_path)),
+        "ai probes": ("needs ai_endpoint and ai_canaries", bool(cfg.ai_endpoint.get("path") and cfg.ai_canaries)),
+        "headers/cors/cookies": ("needs probe_paths", bool(cfg.probe_paths)),
+    }
+    for name, (need, ok) in ready.items():
+        print(f"  {name:22} " + ("configured" if ok else f"NOT CONFIGURED ({need})"))
+    if len(cfg.probe_paths) > cfg.max_probe_paths:
+        print(f"  note: only the first {cfg.max_probe_paths} of {len(cfg.probe_paths)} probe_paths are checked "
+              "(max_probe_paths)")
+    return 0
 
 
 if __name__ == "__main__":

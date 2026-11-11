@@ -1,4 +1,5 @@
 {
+  "setup_complete": false,
   "base_url": "https://staging.yourapp.example",
   "allowed_hosts": ["staging.yourapp.example"],
   "allow_production": false,

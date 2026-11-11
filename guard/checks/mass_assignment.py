@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 
+from ..coverage import Skipped
 from ..findings import Finding
 
 INJECT = {
@@ -45,8 +46,12 @@ def evaluate(url: str, status: int, body: str) -> list[Finding]:
 
 
 def run(cfg, http) -> list[Finding]:
+    if not cfg.mass_assignment_targets:
+        raise Skipped("no mass_assignment_targets configured")
+    headers = cfg.auth_headers("mass_assignment")
+    if headers is None:
+        raise Skipped(f"token '{cfg.check_tokens.get('mass_assignment')}' (check_tokens.mass_assignment) is not set")
     findings: list[Finding] = []
-    headers = {"Authorization": f"Bearer {cfg.tenant_a_token}"} if cfg.tenant_a_token else {}
     for t in cfg.mass_assignment_targets:
         url = cfg.base_url.rstrip("/") + t["path"]
         body = {**t.get("body", {}), **INJECT}

@@ -2,6 +2,7 @@
 staging upload endpoint and flags the ones the server accepts."""
 from __future__ import annotations
 
+from ..coverage import Skipped
 from ..findings import Finding
 
 BOUNDARY = "----guardkit"
@@ -32,9 +33,11 @@ def evaluate(url: str, filename: str, status: int, severity: str) -> list[Findin
 
 def run(cfg, http) -> list[Finding]:
     if not cfg.upload_path:
-        return []
+        raise Skipped("no upload_path configured")
+    headers = cfg.auth_headers("upload")
+    if headers is None:
+        raise Skipped(f"token '{cfg.check_tokens.get('upload')}' (check_tokens.upload) is not set")
     url = cfg.base_url.rstrip("/") + cfg.upload_path
-    headers = {"Authorization": f"Bearer {cfg.tenant_a_token}"} if cfg.tenant_a_token else {}
     findings: list[Finding] = []
     for name, ctype, content, sev in TESTS:
         body, content_type = build_multipart(cfg.upload_field, name, ctype, content)

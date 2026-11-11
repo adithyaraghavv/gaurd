@@ -7,6 +7,7 @@ import json
 import shutil
 import subprocess
 
+from .coverage import RAN, SKIPPED, TOOLS, Coverage
 from .findings import Finding
 
 SEMGREP_SEV = {"ERROR": "high", "WARNING": "medium", "INFO": "low"}
@@ -53,32 +54,46 @@ def parse_trivy(raw: str) -> list[Finding]:
     return out
 
 
-def run_all(source_dir: str) -> tuple[list[Finding], list[str]]:
+INSTALL_HINT = {
+    "semgrep": "pip install semgrep   (https://semgrep.dev/docs/getting-started/)",
+    "gitleaks": "https://github.com/gitleaks/gitleaks#installing",
+    "trivy": "https://trivy.dev/latest/getting-started/installation/",
+}
+
+
+def scan_tools(source_dir: str) -> tuple[list[Finding], list[Coverage]]:
+    """Run each installed scanner and say, per scanner, whether it ran. A missing scanner is a coverage gap:
+    without gitleaks there was no secret scan, and a report must not read as clean in that case."""
     findings: list[Finding] = []
-    notes: list[str] = []
-    if shutil.which("semgrep"):
-        ok, out = _run(["semgrep", "scan", "--config", "p/owasp-top-ten", "--json", "--quiet", source_dir])
-        if ok:
-            findings += parse_semgrep(out)
-        else:
-            notes.append("semgrep failed to run (SAST skipped)")
-    else:
-        notes.append("semgrep not installed (SAST skipped)")
-    if shutil.which("gitleaks"):
-        ok, out = _run(["gitleaks", "detect", "--source", source_dir, "--no-banner",
-                        "--report-format", "json", "--report-path", "/dev/stdout"])
-        if ok:
-            findings += parse_gitleaks(out)
-        else:
-            notes.append("gitleaks failed to run (secret scan skipped)")
-    else:
-        notes.append("gitleaks not installed (secret scan skipped)")
-    if shutil.which("trivy"):
-        ok, out = _run(["trivy", "fs", "--format", "json", "--quiet", source_dir], ok_codes=(0,))
-        if ok:
-            findings += parse_trivy(out)
-        else:
-            notes.append("trivy failed to run (dependency scan skipped)")
-    else:
-        notes.append("trivy not installed (dependency scan skipped)")
+    cov: list[Coverage] = []
+    plans = [
+        ("semgrep", ["semgrep", "scan", "--config", "p/owasp-top-ten", "--json", "--quiet", source_dir],
+         (0, 1), parse_semgrep),
+        ("gitleaks", ["gitleaks", "detect", "--source", source_dir, "--no-banner",
+                      "--report-format", "json", "--report-path", "/dev/stdout"], (0, 1), parse_gitleaks),
+        ("trivy", ["trivy", "fs", "--format", "json", "--quiet", source_dir], (0,), parse_trivy),
+    ]
+    for tool, cmd, ok_codes, parse in plans:
+        what = TOOLS[tool]
+        if not shutil.which(tool):
+            cov.append(Coverage(f"{tool} ({what})", SKIPPED, f"not installed; run `guard doctor`"))
+            continue
+        ok, out = _run(cmd, ok_codes=ok_codes)
+        if not ok:
+            cov.append(Coverage(f"{tool} ({what})", SKIPPED, "installed but failed to run"))
+            continue
+        try:
+            findings += parse(out)
+        except ValueError:
+            cov.append(Coverage(f"{tool} ({what})", SKIPPED, "ran, but its output could not be read"))
+            continue
+        cov.append(Coverage(f"{tool} ({what})", RAN))
+    return findings, cov
+
+
+def run_all(source_dir: str) -> tuple[list[Finding], list[str]]:
+    """Findings plus plain notes. Kept for callers that only want strings; `scan_tools` has the detail."""
+    findings, cov = scan_tools(source_dir)
+    notes = [f"{c.name.split(' ')[0]} {c.detail} ({c.name.split('(')[-1].rstrip(')')} skipped)"
+             for c in cov if c.status == SKIPPED]
     return findings, notes

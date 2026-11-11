@@ -12,7 +12,9 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .coverage import Coverage, gaps, is_complete, to_markdown_table
 from .findings import Finding, SEVERITIES, severity_rank
+from .report import accepted_lines
 
 
 def fid(f: Finding) -> str:
@@ -26,7 +28,9 @@ def _load(out: Path) -> dict:
         return {"runs": [], "session": {"seen": {}, "rounds": 0, "last_ids": []}, "last_clean": False}
 
 
-def record_run(out_dir: str, findings: list[Finding], fail_on: str) -> dict:
+def record_run(out_dir: str, findings: list[Finding], fail_on: str,
+               coverage: list[Coverage] | None = None, accepted=None, notes: list[str] | None = None) -> dict:
+    """`findings` are the ones still active; findings the owner accepted come separately in `accepted`."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     h = _load(out)
@@ -49,8 +53,16 @@ def record_run(out_dir: str, findings: list[Finding], fail_on: str) -> dict:
                       "total": len(tracked), "blocking": len(blocking)})
     h["runs"] = h["runs"][-50:]
     (out / "history.json").write_text(json.dumps(h, indent=2))
-    fixed = [dict(v, id=i) for i, v in s["seen"].items() if i not in cur]
+    accepted = accepted or []
+    accepted_ids = {fid(a.finding) for a in accepted}
+    fixed = [dict(v, id=i) for i, v in s["seen"].items() if i not in cur and i not in accepted_ids]
+    coverage = coverage or []
     return {
+        "coverage": coverage,
+        "complete": is_complete(coverage),
+        "gaps": gaps(coverage),
+        "accepted": accepted,
+        "notes": notes or [],
         "clean": not blocking,
         "rounds": s["rounds"],
         "blocking": blocking,
@@ -74,7 +86,10 @@ def write_fix_tasks(out_dir: str, result: dict) -> Path:
              "1. Fix every BLOCKING item below in the source code, at the root cause.",
              "2. Do not edit guard, its config, or its scope to make findings disappear. "
              "Do not add ignore comments just to silence a finding.",
-             "3. If an item is a false positive, say so in your final summary with the reason; do not hide it.",
+             "3. If an item is a false positive or a deliberate choice, do NOT suppress it. Say so in your final "
+             "summary with the reason. Only the project owner may accept a risk, by adding an entry (check, title "
+             "or target, reason, owner, optional expiry) to `accepted_risks` in guard.config.json; propose the "
+             "entry to them instead of adding it yourself. Accepted risks stay visible in the reports.",
              "4. When finished, stop. The check runs again automatically (or run `guard scan`).", ""]
     if not result["blocking"]:
         lines += ["No blocking issues. Nothing to fix.", ""]
@@ -88,19 +103,29 @@ def write_fix_tasks(out_dir: str, result: dict) -> Path:
         lines.append("")
     if result["open_other"]:
         lines += ["## Not blocking (for the owner to decide)", ""] + [_line(f) for f in result["open_other"]] + [""]
+    if result.get("gaps"):
+        lines += ["## Checks that did not run", ""] + [f"- {c.name}: {c.detail}" for c in result["gaps"]] + [""]
+    lines += accepted_lines(result.get("accepted"))
     p.write_text("\n".join(lines))
     return p
 
 
+def _status(result: dict, fail_on: str) -> str:
+    if not result["clean"]:
+        return f"NOT CLEAN. {len(result['blocking'])} issue(s) at or above '{fail_on}' still open."
+    if result["complete"]:
+        return f"CLEAN. No issues at or above '{fail_on}' remain."
+    names = ", ".join(c.name for c in result["gaps"])
+    return (f"NO BLOCKING ISSUES FOUND, BUT THIS IS NOT A FULL CLEAN. {len(result['gaps'])} check(s) did not run "
+            f"({names}), so problems they would catch were not looked for. See the table below.")
+
+
 def write_summary(out_dir: str, result: dict, fail_on: str) -> Path:
     p = Path(out_dir) / "summary.md"
-    if result["clean"]:
-        status = f"CLEAN. No issues at or above '{fail_on}' remain."
-    else:
-        status = f"NOT CLEAN. {len(result['blocking'])} issue(s) at or above '{fail_on}' still open."
-    lines = ["# Security check summary", "", f"**Status:** {status}",
+    lines = ["# Security check summary", "", f"**Status:** {_status(result, fail_on)}",
              f"**Scan rounds in this session:** {result['rounds']}",
              f"**Issues found in total:** {result['seen_total']}", ""]
+    lines += to_markdown_table(result.get("coverage", []))
     if result["fixed"]:
         lines += [f"## Fixed ({len(result['fixed'])})"]
         lines += [f"- [{v['severity'].upper()}] {v['title']}" + (f" ({v['target']})" if v["target"] else "")
@@ -111,6 +136,9 @@ def write_summary(out_dir: str, result: dict, fail_on: str) -> Path:
     if result["open_other"]:
         lines += [f"## Left for you to decide ({len(result['open_other'])})",
                   "Below the failure threshold, so not auto-fixed:"] + [_line(f) for f in result["open_other"]] + [""]
+    lines += accepted_lines(result.get("accepted"))
+    if result.get("notes"):
+        lines += ["## Notes"] + [f"- {n}" for n in result["notes"]] + [""]
     lines += ["## What this did not check",
               "- Whether your features work correctly for real users.",
               "- Business-logic flaws a scanner cannot see.",

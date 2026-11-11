@@ -26,7 +26,7 @@ def evaluate(url: str, headers: dict) -> list[Finding]:
 
 def run(cfg, http) -> list[Finding]:
     findings: list[Finding] = []
-    for path in cfg.probe_paths[:5]:
+    for path in cfg.probe_slice():
         url = cfg.base_url.rstrip("/") + path
         status, hdrs, _ = http.request("GET", url, headers={"Origin": EVIL_ORIGIN})
         if status:
