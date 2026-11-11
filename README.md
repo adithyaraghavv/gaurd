@@ -92,8 +92,8 @@ Install once, then use `/guard` in any project.
 
 ```bash
 # 1. Install guard (use your repo's address)
-git clone https://github.com/<your-username>/guard.git
-pip install ./guard
+git clone https://github.com/adithyaraghavv/gaurd.git   # note the spelling: the repo is named "gaurd"
+pip install ./gaurd
 
 # 2. One-time Claude Code setup: installs the /guard command for every project
 guard setup
@@ -140,7 +140,7 @@ A browser session (claude.ai/code) runs in the cloud, so it cannot see the `~/.c
 ```bash
 cd your-app
 git checkout -b guard-test
-guard setup --project --repo <your-username>/guard
+guard setup --project --repo adithyaraghavv/gaurd
 git add .claude CLAUDE.md .gitignore
 git commit -m "Add guard"
 git push -u origin guard-test
@@ -173,13 +173,15 @@ Or type `/guard` yourself at any time to run the whole loop on demand, including
 | `cors` | A site you do not own being allowed to read responses, especially with credentials | Yes |
 | `cookies` | Session cookies missing `HttpOnly`, `Secure` or `SameSite` | Yes |
 | `exposed` | Public `.env`, `.git`, database dumps, debug and status pages (verified by content, so single-page apps do not cause false alarms) | Yes |
-| `tenant` | User B reading user A's data, and routes that work with no login at all (IDOR / broken access control) | Yes |
+| `tenant` | User B reading user A's data, and routes that work with no login at all (IDOR / broken access control). A `200` with an empty body is treated as correct row-level-security behavior, not a leak | Yes |
 | `jwt` | Tokens that never expire or use `alg=none`; the server accepting forged copies of your own test token | Partly |
 | `injection` | SQL injection signs: database errors after a single quote, and true/false response differences. Never destructive | Yes |
 | `mass_assignment` | A client being able to set `role`, `is_admin`, `tenant_id`, `owner_id` | Yes |
 | `upload` | Dangerous file types accepted (`.php`, `.html`, `.svg` with script, `.exe`) | Yes |
 | `ratelimit` | No throttling on your login route | Yes |
-| `db_rules` | SQL tables without row-level security, and policies that match every row | No |
+| `db_rules` | SQL tables without row-level security, and policies that match every row. Judged by command and role: an anonymous read-only policy is low, writes or reads by every signed-in user are high | No |
+| `db_access` | `SECURITY DEFINER` functions without a fixed `search_path`; functions anyone can run; views without `security_invoker`; grants wider than the policies; public storage buckets and unscoped storage policies; service-role keys in front-end files | No |
+| `access` | Role-based rules you write (caller, path, expected `denied` / `empty` / `allowed`), for apps with roles instead of two tenants | Yes |
 | `ai` | Model keys exposed to the browser, model output reaching `eval` or raw HTML, prompt-injection leaks (via canary strings) | Partly |
 | static stage | semgrep (code patterns), gitleaks (secrets), trivy (vulnerable dependencies), when installed | No |
 
@@ -213,6 +215,13 @@ For any app where users own data (workspaces, shops, teams, accounts), create tw
 | `ai_canaries` | `[]` | Secret strings planted in your system prompt that must never be echoed |
 | `max_fix_rounds` | `5` | Fix rounds before the loop stops and reports |
 | `fail_on` | `"high"` | Lowest severity that blocks |
+| `setup_complete` | `false` in a fresh `guard init` file | **Live scans are refused until you review the file and set this to `true`.** Also refused while `base_url` is a placeholder (`.example`, `.invalid`, `.test`) |
+| `accepted_risks` | `[]` | Findings you reviewed and accept: `{"check", "title" and/or "target" (`*` allowed), "reason", "owner", "expires" (optional YYYY-MM-DD)}`. They stop blocking but are always listed in their own report section. Only the project owner adds these |
+| `tokens` | `{}` | Named tokens for roles, e.g. `{"staff": "ENV:STAFF_TOKEN"}` |
+| `check_tokens` | `{}` | Which token each check uses, e.g. `{"injection": "anonymous", "upload": "staff"}`. Default is tenant A |
+| `access_checks` | `[]` | Role rules for the `access` check |
+| `injection_targets` | `[]` | Injection inputs that are not query strings; `{payload}` marks the spot, e.g. `{"path": "/rest/v1/items?name=eq.{payload}"}` or `{"path": "/rpc/search", "method": "POST", "body": {"q": "{payload}"}}` |
+| `max_probe_paths` | `5` | How many `probe_paths` the header, CORS, cookie and injection checks use. Paths beyond it are reported as unchecked |
 
 Example:
 
@@ -229,6 +238,27 @@ Example:
   "fail_on": "high"
 }
 ```
+
+---
+
+## Reading a report honestly
+
+Every report and summary opens with a **What ran** table: each check is `ran`, `SKIPPED` (it should have run but could not, with the reason), `off (by choice)` (`--no-live`, `--only`) or `not applicable` (nothing to check, such as no `.sql` files). The summary says **CLEAN** only when no blocking issue remains *and* nothing was skipped. Otherwise it says "no blocking issues found, but this is not a full clean" and names what did not run, for example a missing secret scanner.
+
+`guard doctor` lists which scanners are installed, whether live scans are allowed, which tokens are set, and which checks your config actually enables. It changes nothing and sends nothing. guard does not download scanners for you; install semgrep, gitleaks and trivy yourself, pin the version and verify it.
+
+### Accepting a known false alarm
+
+If a finding is a false alarm or a deliberate choice (a public catalog table, say), the coding agent must not hide it and the scan must not stay red forever. Add it to `accepted_risks` yourself:
+
+```json
+"accepted_risks": [
+  {"check": "db_rules", "title": "Public read policy * on 'plans' *",
+   "reason": "Pricing plans are shown on the public website", "owner": "adi", "expires": "2027-06-30"}
+]
+```
+
+It stops blocking, but it appears under **Accepted risks** in `report.md`, `summary.md` and `fix_tasks.md` with its reason and owner. After the expiry date it blocks again. An entry that matches nothing is reported as stale.
 
 ---
 
@@ -250,7 +280,7 @@ Everything is written to `guard_out/`:
 | `guard scan` | `0` | No blocking findings |
 | | `1` | Blocking findings exist |
 | | `2` | Config error |
-| | `3` | **Scope blocked:** a host was not allowed. Nothing was sent |
+| | `3` | **Scope blocked** (a host was not allowed) or **live scan refused** (config not marked set up, or placeholder host). Nothing was sent |
 | `guard gate` | `0` | Claude may stop |
 | | `2` | Claude is sent back to fix issues, or to present the summary |
 
@@ -286,7 +316,11 @@ Only test systems you own or have written permission to test.
 ```
 guard/
 ├── guard/
-│   ├── cli.py            # commands: init, scan, gate, setup
+│   ├── cli.py            # commands: init, scan, gate, setup, doctor
+│   ├── accept.py         # accepted risks
+│   ├── coverage.py       # what ran / was skipped
+│   ├── sqlscan.py        # SQL statement splitter for the static checks
+│   ├── bodies.py         # is a response body empty?
 │   ├── claude_setup.py   # `guard setup`: installs /guard, rules and hook for Claude Code
 │   ├── assets.py         # the text that setup installs
 │   ├── config.py         # settings and the starter config
@@ -297,7 +331,7 @@ guard/
 │   ├── findings.py       # the Finding record
 │   ├── files.py          # source-file walker
 │   └── checks/           # one file per check
-├── tests/                # 67 unit tests
+├── tests/                # 174 unit tests
 ├── .github/workflows/guard.yml
 ├── Dockerfile
 ├── TRUST.md              # what guard does and does not protect against

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ..coverage import Skipped
 from ..findings import Finding
 
 
@@ -15,7 +16,7 @@ def evaluate(url: str, statuses: list[int]) -> list[Finding]:
 
 def run(cfg, http) -> list[Finding]:
     if not cfg.rate_limit_path:
-        return []
+        raise Skipped("no rate_limit_path configured")
     url = cfg.base_url.rstrip("/") + cfg.rate_limit_path
     n = min(cfg.rate_limit_attempts, 100)
     statuses = [http.request("POST", url, body={"email": "nobody@example.invalid", "password": "wrong"})[0]

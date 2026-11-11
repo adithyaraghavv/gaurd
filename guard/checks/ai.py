@@ -76,10 +76,16 @@ def run(cfg, http) -> list[Finding]:
     if http is not None and ep.get("path"):
         if not cfg.ai_canaries:
             findings.append(Finding("ai", "info", "AI probe skipped: no canaries configured",
-                                    "Put a unique string in your system prompt and list it in ai_canaries."))
+                                    "Put a unique string in your system prompt and list it in ai_canaries.",
+                                    tags=["coverage-note"]))
             return findings
         url = cfg.base_url.rstrip("/") + ep["path"]
-        headers = {"Authorization": f"Bearer {cfg.tenant_a_token}"} if cfg.tenant_a_token else {}
+        headers = cfg.auth_headers("ai")
+        if headers is None:
+            findings.append(Finding("ai", "info", "AI probe skipped: token not set",
+                                    f"check_tokens.ai names '{cfg.check_tokens.get('ai')}', which is not set.",
+                                    tags=["coverage-note"]))
+            return findings
         for probe in PROBES:
             _, _, reply = http.request(ep.get("method", "POST").upper(), url, headers,
                                        {ep.get("field", "message"): probe})

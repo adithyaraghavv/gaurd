@@ -46,7 +46,7 @@ def evaluate(url: str, cookies: list[str]) -> list[Finding]:
 def run(cfg, http) -> list[Finding]:
     findings: list[Finding] = []
     seen: set[tuple[str, str]] = set()
-    for path in cfg.probe_paths[:5]:
+    for path in cfg.probe_slice():
         url = cfg.base_url.rstrip("/") + path
         http.request("GET", url)
         for f in evaluate(url, http.last_set_cookies):
