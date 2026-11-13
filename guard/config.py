@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .accept import validate as validate_accepted
+from .readiness import validate as validate_signoffs
 
 
 def resolve_secret(val):
@@ -64,6 +65,16 @@ class Config:
     # Which token each check uses: {"injection": "client", "upload": "staff", "mass_assignment": "anonymous"}.
     # A value is a name from `tokens`, "tenant_a", "tenant_b" or "anonymous" (send no token). Default: tenant A.
     check_tokens: dict = field(default_factory=dict)
+    # Tenant A's resource ids by parameter name, for routes the resource URLs do not reveal: {"client_id": "abc"}.
+    tenant_a_ids: dict = field(default_factory=dict)
+    # Where the OpenAPI schema lives, used by the tenant_routes check to find every route that takes an id.
+    openapi_path: str = "/openapi.json"
+    openapi_file: str = ""  # or a local copy of the schema (used instead of the URL when set)
+    # tenant_routes also tries PUT/PATCH/POST/DELETE as tenant B ONLY when this is true. If isolation is broken a
+    # write can change or delete tenant A's data, so use disposable staging data.
+    tenant_write_checks: bool = False
+    # Request bodies for write routes, by "METHOD /path/template": {"PATCH /clients/{client_id}": {"name": "x"}}.
+    tenant_write_bodies: dict = field(default_factory=dict)
     # Role-based access rules, for apps with roles instead of two tenants. Each:
     # {"name": "client cannot list staff", "path": "/api/staff", "method": "GET",
     #  "caller": "anonymous" | <token name>, "expect": "denied" | "empty" | "allowed"}
@@ -94,6 +105,18 @@ class Config:
     # Findings you have looked at and accepted: [{"check", "title" and/or "target" (* allowed), "reason", "owner",
     # "expires" (YYYY-MM-DD, optional)}]. They stop blocking but are always listed in the reports.
     accepted_risks: list[dict] = field(default_factory=list)
+    # Supabase / Postgres audit (read-only). A JSON export of Supabase's own advisors (security lints) that you saved
+    # from the dashboard or the Supabase tools; guard only reads the file.
+    supabase_advisors_file: str = ""
+    # A read-only look at a LIVE database's catalog (RLS, policies, grants, functions, buckets). "ENV:NAME" reads the
+    # connection string from the environment. Needs the psql program. Runs only when live checks are on, only against
+    # hosts listed in db_audit_allowed_hosts, and never against production-looking hosts. Sends SELECTs only, inside
+    # a read-only session.
+    db_audit_url: str = ""
+    db_audit_allowed_hosts: list[str] = field(default_factory=list)
+    # Manual launch items you have verified yourself: {"backups_restore": {"by": "adi", "date": "2026-11-12",
+    # "note": "...", "expires": "2027-05-01"}}. Guard never fills this in and never marks the items as passed.
+    launch_signoffs: dict = field(default_factory=dict)
     # How many fix rounds the auto-fix loop may run before it stops and reports.
     max_fix_rounds: int = 5
     fail_on: str = "high"
@@ -111,6 +134,9 @@ class Config:
         if isinstance(raw.get("tokens"), dict):
             raw["tokens"] = {k: resolve_secret(v) for k, v in raw["tokens"].items()}
         raw["accepted_risks"] = validate_accepted(raw.get("accepted_risks", []))
+        raw["launch_signoffs"] = validate_signoffs(raw.get("launch_signoffs", {}))
+        if "db_audit_url" in raw:
+            raw["db_audit_url"] = resolve_secret(raw["db_audit_url"])
         cfg = cls(**raw)
         cfg.check_config()
         return cfg
@@ -131,6 +157,10 @@ class Config:
                 raise ValueError(f"access_checks[{n}] 'expect' must be denied, empty or allowed")
             if a.get("caller", "anonymous") not in names:
                 raise ValueError(f"access_checks[{n}] caller '{a.get('caller')}' is not a known token name")
+        for key in self.tenant_write_bodies:
+            if not (isinstance(key, str) and key.split(" ", 1)[0].upper() in ("PUT", "PATCH", "POST", "DELETE")
+                    and " /" in key):
+                raise ValueError(f"tenant_write_bodies key {key!r} must look like 'PATCH /clients/{{client_id}}'")
         for n, t in enumerate(self.injection_targets, 1):
             if not isinstance(t, dict) or "{payload}" not in json.dumps(t):
                 raise ValueError(f"injection_targets[{n}] must contain the text {{payload}} in its path or body")

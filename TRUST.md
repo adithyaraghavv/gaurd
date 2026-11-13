@@ -14,3 +14,10 @@
 - `db_rules` only reads `.sql` files; it cannot see policies created through a dashboard.
 
 **Safety limits:** live checks refuse unlisted or production-looking hosts. The mass-assignment and upload checks write data, so use staging with dummy data only.
+
+**Added in round 2, and what to know about each:**
+- `supabase_audit` never writes. Its live part sends a fixed list of SELECT statements inside a `BEGIN READ ONLY` transaction through `psql`, refuses any statement that is not a single SELECT, and only talks to hosts you list that do not look like production. Use a read-only database role anyway. Leaked-password protection and other hosted-only settings cannot be read from your code: they only appear if you provide an advisors export.
+- `tenant_routes` write checks can change or delete tenant A's data if your isolation is broken. They are off unless you turn them on. A 400/422 means the route validated the body first, so it proves nothing until you supply a valid body.
+- `prod_config` is a lint over files. Its rate-limit and security-header findings are heuristics and can be wrong when a proxy or provider does that work. It never connects anywhere and never prints a secret's value.
+- The scanner installer only installs what you pinned and checksummed. Guard cannot tell whether the checksum you wrote is the right one; that is your check.
+- Launch-readiness sign-offs are your statements. Guard shows them but cannot verify them.

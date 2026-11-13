@@ -20,7 +20,7 @@ import re
 from pathlib import Path
 
 from ..coverage import Skipped
-from ..files import walk
+from ..files import is_changed, walk
 from ..findings import Finding
 from ..sqlscan import bare, ident, split_statements, split_top_level
 from . import db_rules
@@ -146,8 +146,33 @@ def view_findings(stmts: list[tuple[str, str]]) -> list[Finding]:
 
 
 # ---- grants ----------------------------------------------------------------------------------------------------
+def grant_gaps(grants: list[tuple[str, str, str, set]], pols: dict[str, list[dict]], enabled: set[str]) -> list[Finding]:
+    """Grants to anon/authenticated that no policy covers. `grants` are (where, table, role, privileges). Works on
+    data, so the static check (SQL files) and the live catalog audit share it. Tables without RLS are left to
+    db_rules."""
+    out: list[Finding] = []
+    merged: dict[tuple[str, str, str], set] = {}  # one finding per table and role, not one per privilege row
+    for where, t, role, privs in grants:
+        merged.setdefault((where, t, role), set()).update(privs)
+    for (where, t, role), privs in merged.items():
+        if t not in enabled:
+            continue
+        uncovered = sorted(
+            p for p in privs & ({"select"} | WRITES)
+            if not any(role in pol["roles"] or "public" in pol["roles"]
+                       for pol in pols.get(t, []) if pol["cmd"] in (p, "all")))
+        if uncovered:
+            out.append(Finding(
+                "db_access", "medium" if role in ("anon", "public") else "low",
+                f"Grant on '{t}' to {role} goes beyond its policies",
+                f"{role} is granted {', '.join(uncovered).upper()} on '{t}' but no policy allows it. Safe "
+                "while row-level security stays enabled, but the grant is wider than the rules.", where,
+                fix="Remove the grants no policy needs (REVOKE ... FROM " + role + "). " + ACCEPT))
+    return out
+
+
 def grant_findings(stmts: list[tuple[str, str]], enabled: set[str]) -> list[Finding]:
-    """Grants to anon/authenticated that no policy covers. Tables without RLS are left to db_rules."""
+    """Static version: read GRANT statements from SQL files."""
     pols: dict[str, list[dict]] = {}
     for _, st in stmts:
         p = db_rules.parse_policy(st)
@@ -159,6 +184,7 @@ def grant_findings(stmts: list[tuple[str, str]], enabled: set[str]) -> list[Find
         if m and "anon" in _roles(m.group(3)) and not NON_TABLE.match(m.group(2).strip()):
             revoked_anon_tables = True
     out: list[Finding] = []
+    grants: list[tuple[str, str, str, set]] = []
     for path, st in stmts:
         m = GRANT.match(st)
         if not m:
@@ -169,7 +195,7 @@ def grant_findings(stmts: list[tuple[str, str]], enabled: set[str]) -> list[Find
         roles = _roles(m.group(3)) & {"anon", "authenticated", "public"}
         if not roles:
             continue
-        privs = _privs(m.group(1)) & ({"select"} | WRITES)
+        privs = _privs(m.group(1))
         if re.match(r"all\s+tables\s+in\s+schema", target, re.I):
             if "anon" in roles and not revoked_anon_tables:
                 out.append(Finding("db_access", "medium", "Blanket grant on all tables to anon",
@@ -178,23 +204,10 @@ def grant_findings(stmts: list[tuple[str, str]], enabled: set[str]) -> list[Find
                                    fix="Grant only the tables anonymous users need, or revoke from anon and rely on "
                                        "explicit grants. " + ACCEPT))
             continue
-        tables = [bare(t) for t in split_top_level(re.sub(r"^table\s+", "", target, flags=re.I))]
-        for t in tables:
-            if t not in enabled:
-                continue  # no RLS at all: reported by db_rules
+        for t in (bare(x) for x in split_top_level(re.sub(r"^table\s+", "", target, flags=re.I))):
             for role in sorted(roles):
-                uncovered = sorted(
-                    p for p in privs
-                    if not any(role in pol["roles"] or "public" in pol["roles"]
-                               for pol in pols.get(t, []) if pol["cmd"] in (p, "all")))
-                if uncovered:
-                    out.append(Finding(
-                        "db_access", "medium" if role in ("anon", "public") else "low",
-                        f"Grant on '{t}' to {role} goes beyond its policies",
-                        f"{role} is granted {', '.join(uncovered).upper()} on '{t}' but no policy allows it. Safe "
-                        "while row-level security stays enabled, but the grant is wider than the rules.", path,
-                        fix="Remove the grants no policy needs (REVOKE ... FROM " + role + "). " + ACCEPT))
-    return out
+                grants.append((path, t, role, privs))
+    return out + grant_gaps(grants, pols, enabled)
 
 
 # ---- storage ---------------------------------------------------------------------------------------------------
@@ -213,8 +226,12 @@ def storage_findings(stmts: list[tuple[str, str]]) -> list[Finding]:
         if m:
             cols = [c.strip().lower() for c in m.group(1).split(",")]
             vals = split_top_level(m.group(2))
+            bid = vals[0].strip("' ") if vals else "?"
+            if len(vals) == len(cols) and ("file_size_limit" not in cols or vals[cols.index("file_size_limit")].lower() == "null"):
+                out.append(Finding("db_access", "low", f"Storage bucket '{bid}' has no file size limit",
+                                   "Without a limit one user can upload very large files (cost and abuse).", path,
+                                   fix="Set file_size_limit on the bucket (and allowed_mime_types). " + ACCEPT))
             if "public" in cols and len(vals) == len(cols) and vals[cols.index("public")].lower() == "true":
-                bid = vals[0].strip("' ") if vals else "?"
                 out.append(Finding("db_access", "medium", f"Storage bucket '{bid}' is public",
                                    "Anyone with a file's URL can read it without signing in.", path,
                                    fix="Make the bucket private and serve files through short-lived signed URLs. "
@@ -280,5 +297,7 @@ def run(cfg, http) -> list[Finding]:
     enabled: set[str] = set()
     for _, sql in files:
         enabled |= db_rules.protected_tables(sql)
-    findings += function_findings(stmts) + view_findings(stmts) + grant_findings(stmts, enabled) + storage_findings(stmts)
+    sql_findings = (function_findings(stmts) + view_findings(stmts) + grant_findings(stmts, enabled)
+                    + storage_findings(stmts))
+    findings += [f for f in sql_findings if is_changed(f.target)]  # --diff-since: whole-project context, changed-file report
     return findings

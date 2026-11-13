@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 
 from ..coverage import Skipped
-from ..files import walk
+from ..files import is_changed, walk
 from ..findings import Finding
 from ..sqlscan import bare, ident, split_statements, strip_comments
 
@@ -139,7 +139,7 @@ def evaluate_sql(path: str, sql: str, high: bool) -> list[Finding]:
 
 def sql_files(source_dir: str) -> list[tuple[Path, str]]:
     files: list[tuple[Path, str]] = []
-    for p in sorted(walk(source_dir, (".sql",))):
+    for p in sorted(walk(source_dir, (".sql",), all_files=True)):  # context: every file, even in diff mode
         try:
             files.append((p, p.read_text(errors="replace")))
         except OSError:
@@ -158,6 +158,8 @@ def run(cfg, http) -> list[Finding]:
         protected |= protected_tables(sql)
     findings: list[Finding] = []
     for p, sql in files:
+        if not is_changed(p):  # --diff-since: judged with the whole project, but only changed files are reported
+            continue
         high = "supabase" in {part.lower() for part in p.parts}
         findings += missing_rls(str(p), created_tables(sql) - protected, high)
         findings += open_policies(str(p), sql)

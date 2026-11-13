@@ -1,0 +1,25 @@
+{
+  "_comment": "Copy to scanners.lock and fill in. Check each release and checksum yourself; guard installs only what is written here. Placeholders are refused.",
+  "tools": {
+    "gitleaks": {
+      "version": "REPLACE_WITH_VERSION",
+      "platforms": {
+        "linux-amd64": {
+          "url": "https://REPLACE_WITH_RELEASE_URL_FROM_THE_PROJECT",
+          "sha256": "REPLACE_WITH_64_HEX_SHA256_YOU_VERIFIED",
+          "binary": "gitleaks"
+        }
+      }
+    },
+    "trivy": {
+      "version": "REPLACE_WITH_VERSION",
+      "platforms": {
+        "linux-amd64": {
+          "url": "https://REPLACE_WITH_RELEASE_URL_FROM_THE_PROJECT",
+          "sha256": "REPLACE_WITH_64_HEX_SHA256_YOU_VERIFIED",
+          "binary": "trivy"
+        }
+      }
+    }
+  }
+}

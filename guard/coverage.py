@@ -48,3 +48,59 @@ def to_markdown_table(coverage: list[Coverage]) -> list[str]:
     for c in coverage:
         lines.append(f"| {c.name} | {LABEL.get(c.status, c.status)} | {c.detail.replace('|', '/')} |")
     return lines + [""]
+
+
+def percent(coverage: list[Coverage]) -> int | None:
+    """Share of applicable checks that actually ran. `n/a` (nothing to check) is left out. None if nothing applies."""
+    counted = [c for c in coverage if c.status != NA]
+    if not counted:
+        return None
+    return round(100 * sum(1 for c in counted if c.status == RAN) / len(counted))
+
+
+def counts(coverage: list[Coverage], scanner_names: set[str]) -> dict:
+    """Numbers for the one-line result. "Scanner checks" are the ones that need no network (the outside scanners
+    and the code/config checks); "live" are the ones that talk to a running staging app."""
+    def is_scanner(c: Coverage) -> bool:
+        return c.name.split(" ")[0] in scanner_names
+    sc = [c for c in coverage if is_scanner(c) and c.status != NA]
+    live = [c for c in coverage if not is_scanner(c) and c.status != NA]
+    return {
+        "scanner_total": len(sc),
+        "scanner_missing": [c for c in sc if c.status != RAN],
+        "live_total": len(live),
+        "live_off": [c for c in live if c.status == OFF],
+        "live_skipped": [c for c in live if c.status == SKIPPED],
+        "live_ran": [c for c in live if c.status == RAN],
+    }
+
+
+def result_line(coverage: list[Coverage], scanner_names: set[str], total: int, blocking: int,
+                accepted: int = 0) -> str:
+    """The first thing a human reads. A partial scan must never read like a pass, so it says PARTIAL, what did
+    not run, and that the findings count only describes what did."""
+    c = counts(coverage, scanner_names)
+    pct = percent(coverage)
+    parts = []
+    if c["scanner_missing"]:
+        parts.append(f"{len(c['scanner_missing'])} of {c['scanner_total']} scanner checks did not run "
+                     f"({', '.join(x.name.split(' ')[0] for x in c['scanner_missing'])})")
+    if c["live_off"]:
+        parts.append(f"{len(c['live_off'])} live checks off")
+    if c["live_skipped"]:
+        parts.append(f"{len(c['live_skipped'])} live checks skipped (not configured)")
+    cov = f"coverage {pct}%" if pct is not None else "coverage n/a"
+    findings = f"{total} finding(s) in the checks that ran"
+    extra = f", {accepted} accepted" if accepted else ""
+    if blocking:
+        head = f"FAIL: {blocking} blocking finding(s) ({findings}{extra})"
+        return head + (f". PARTIAL: {'; '.join(parts)}; {cov}" if parts else f"; {cov}")
+    if parts:
+        return f"PARTIAL: {'; '.join(parts)}; {cov}. {findings}{extra}. This is NOT a pass."
+    return f"COMPLETE: every applicable check ran; {cov}. {findings}{extra}."
+
+
+def required_missing(coverage: list[Coverage]) -> list[Coverage]:
+    """Required scanners that did not run: the outside scanners (code, secret, dependency scan) that were
+    wanted but are missing or failed. Checks switched off on purpose (--no-live, --only) do not count."""
+    return [c for c in coverage if c.status == SKIPPED and c.name.split(" ")[0] in TOOLS]

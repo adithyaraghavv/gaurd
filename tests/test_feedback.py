@@ -569,12 +569,26 @@ class GrantTests(unittest.TestCase):
 
 class StorageTests(unittest.TestCase):
     def test_public_bucket(self):
-        f = db_access.storage_findings(stmts("insert into storage.buckets (id, name, public) values ('pics', 'pics', true);"))
+        f = db_access.storage_findings(stmts(
+            "insert into storage.buckets (id, name, public, file_size_limit) values ('pics', 'pics', true, 5000000);"))
         self.assertEqual(titles(f), ["Storage bucket 'pics' is public"])
 
     def test_private_bucket_is_clean(self):
         self.assertEqual(db_access.storage_findings(stmts(
-            "insert into storage.buckets (id, name, public) values ('pics', 'pics', false) on conflict (id) do nothing;")), [])
+            "insert into storage.buckets (id, name, public, file_size_limit) values ('pics', 'pics', false, 5000000) "
+            "on conflict (id) do nothing;")), [])
+
+    def test_bucket_without_a_size_limit(self):
+        f = db_access.storage_findings(stmts(
+            "insert into storage.buckets (id, name, public) values ('pics', 'pics', false);"))
+        self.assertEqual((titles(f), sev(f)), (["Storage bucket 'pics' has no file size limit"], ["low"]))
+        null = db_access.storage_findings(stmts(
+            "insert into storage.buckets (id, name, public, file_size_limit) values ('pics', 'pics', false, null);"))
+        self.assertEqual(len(null), 1)
+
+    def test_public_bucket_without_a_limit_gets_both_findings(self):
+        f = db_access.storage_findings(stmts("insert into storage.buckets (id, name, public) values ('p', 'p', true);"))
+        self.assertEqual(sorted(sev(f)), ["low", "medium"])
 
     def test_bucket_made_public_later(self):
         self.assertEqual(len(db_access.storage_findings(stmts("update storage.buckets set public = true where id = 'x';"))), 1)
@@ -658,9 +672,9 @@ class SetupSafetyTests(unittest.TestCase):
         self.assertIn("placeholder", err)
 
     def test_code_only_scan_works_on_a_fresh_config(self):
-        code, out, _ = self.cli_in(DEFAULT_CONFIG, ["scan", "--no-live"])
+        code, out, _ = self.cli_in(DEFAULT_CONFIG, ["scan", "--no-live", "--allow-partial"])
         self.assertIn(code, (0, 1))
-        self.assertIn("findings", out)
+        self.assertIn("finding", out)
 
     def test_offline_only_selection_is_not_blocked(self):
         code, _, err = self.cli_in(DEFAULT_CONFIG, ["scan", "--only", "db_rules"])

@@ -62,6 +62,8 @@ def run(cfg, http) -> list[Finding]:
                               ("tenant_a_resources", cfg.tenant_a_resources)) if not v]
     if missing:
         raise Skipped("not set: " + ", ".join(missing) + " (apps with roles instead of tenants: use access_checks)")
+    if cfg.tenant_a_token == cfg.tenant_b_token:
+        raise Skipped("tenant_a_token and tenant_b_token are the same token, so there is no 'other tenant' to test")
     findings: list[Finding] = []
     for path in cfg.tenant_a_resources:
         url = cfg.base_url.rstrip("/") + path

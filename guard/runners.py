@@ -6,8 +6,12 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from pathlib import Path
 
-from .coverage import RAN, SKIPPED, TOOLS, Coverage
+from . import files as filesmod
+from .scanners import search_path
+
+from .coverage import NA, RAN, SKIPPED, TOOLS, Coverage
 from .findings import Finding
 
 SEMGREP_SEV = {"ERROR": "high", "WARNING": "medium", "INFO": "low"}
@@ -66,8 +70,12 @@ def scan_tools(source_dir: str) -> tuple[list[Finding], list[Coverage]]:
     without gitleaks there was no secret scan, and a report must not read as clean in that case."""
     findings: list[Finding] = []
     cov: list[Coverage] = []
+    targets = [source_dir]
+    if filesmod.CHANGED is not None:  # --diff-since: semgrep reads only the changed files that still exist
+        root = Path(source_dir).resolve()
+        targets = sorted(str(p) for p in filesmod.CHANGED if p.is_file() and (root == p or root in p.parents))
     plans = [
-        ("semgrep", ["semgrep", "scan", "--config", "p/owasp-top-ten", "--json", "--quiet", source_dir],
+        ("semgrep", ["semgrep", "scan", "--config", "p/owasp-top-ten", "--json", "--quiet", *targets],
          (0, 1), parse_semgrep),
         ("gitleaks", ["gitleaks", "detect", "--source", source_dir, "--no-banner",
                       "--report-format", "json", "--report-path", "/dev/stdout"], (0, 1), parse_gitleaks),
@@ -75,10 +83,14 @@ def scan_tools(source_dir: str) -> tuple[list[Finding], list[Coverage]]:
     ]
     for tool, cmd, ok_codes, parse in plans:
         what = TOOLS[tool]
-        if not shutil.which(tool):
-            cov.append(Coverage(f"{tool} ({what})", SKIPPED, f"not installed; run `guard doctor`"))
+        if tool == "semgrep" and filesmod.CHANGED is not None and not targets:
+            cov.append(Coverage(f"{tool} ({what})", NA, "--diff-since: no changed files to scan"))
             continue
-        ok, out = _run(cmd, ok_codes=ok_codes)
+        exe = shutil.which(tool, path=search_path())
+        if not exe:
+            cov.append(Coverage(f"{tool} ({what})", SKIPPED, f"not installed; run `guard doctor` (or `guard doctor --install` with a scanners.lock)"))
+            continue
+        ok, out = _run([exe, *cmd[1:]], ok_codes=ok_codes)
         if not ok:
             cov.append(Coverage(f"{tool} ({what})", SKIPPED, "installed but failed to run"))
             continue
@@ -87,7 +99,8 @@ def scan_tools(source_dir: str) -> tuple[list[Finding], list[Coverage]]:
         except ValueError:
             cov.append(Coverage(f"{tool} ({what})", SKIPPED, "ran, but its output could not be read"))
             continue
-        cov.append(Coverage(f"{tool} ({what})", RAN))
+        full = "" if tool == "semgrep" or filesmod.CHANGED is None else "whole tree (this tool cannot be limited to changed files)"
+        cov.append(Coverage(f"{tool} ({what})", RAN, full))
     return findings, cov
 
 

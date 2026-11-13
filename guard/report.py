@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from .coverage import Coverage, to_markdown_table
+from . import readiness
+from .coverage import Coverage, percent, to_markdown_table
 from .findings import Finding, SEVERITIES, severity_rank
 
 
@@ -24,13 +25,33 @@ def accepted_lines(accepted) -> list[str]:
     return lines + [""]
 
 
+def report_skipped_first(prev: dict | None, coverage: list[Coverage]) -> list[str]:
+    """Checks that were skipped on the previous scan, listed before everything else, with what happened to them."""
+    if not prev:
+        return []
+    now = {c.name: c for c in coverage or []}
+    lines = ["## Skipped last time", "",
+             "These did not run on the previous scan. They come first because a gap that stays open is the most "
+             "likely way to miss something.", ""]
+    for name, why in prev.items():
+        c = now.get(name)
+        state = ("ran this time" if c and c.status == "ran" else
+                 f"STILL {c.status.upper()}" if c else "not part of this scan")
+        lines.append(f"- {name}: {state} (was: {why})")
+    return lines + [""]
+
+
 def to_markdown(findings: list[Finding], notes: list[str], coverage: list[Coverage] | None = None,
-                accepted=None) -> str:
+                accepted=None, prev_skipped: dict | None = None, ready: list | None = None) -> str:
     fs = sort_findings(findings)
     counts = {s: sum(1 for f in fs if f.severity == s) for s in reversed(SEVERITIES)}
     lines = ["# Guard report", f"_{datetime.now(timezone.utc).isoformat(timespec='seconds')}_", "",
              "| " + " | ".join(counts) + " |", "|" + "---|" * len(counts),
              "| " + " | ".join(str(v) for v in counts.values()) + " |", ""]
+    pct = percent(coverage or [])
+    if pct is not None:
+        lines += [f"**Coverage:** {pct}% of applicable checks ran", ""]
+    lines += report_skipped_first(prev_skipped, coverage or [])
     lines += to_markdown_table(coverage or [])
     lines += accepted_lines(accepted)
     for n in notes:
@@ -44,13 +65,16 @@ def to_markdown(findings: list[Finding], notes: list[str], coverage: list[Covera
             lines.append(f"- evidence: `{f.evidence}`")
         if f.fix:
             lines.append(f"- fix: {f.fix}")
+    lines += [""] + readiness.to_markdown(ready if ready is not None else readiness.items({}))
     return "\n".join(lines) + "\n"
 
 
 def to_json(findings: list[Finding], notes: list[str], coverage: list[Coverage] | None = None,
-            accepted=None) -> str:
+            accepted=None, ready: list | None = None) -> str:
     return json.dumps({
         "notes": notes,
+        "coverage_percent": percent(coverage or []),
+        "launch_readiness": readiness.to_json(ready if ready is not None else readiness.items({})),
         "coverage": [c.to_dict() for c in coverage or []],
         "accepted": [{"finding": a.finding.to_dict(), "reason": a.reason, "owner": a.owner, "expires": a.expires}
                      for a in accepted or []],

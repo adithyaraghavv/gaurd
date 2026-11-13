@@ -181,8 +181,11 @@ Or type `/guard` yourself at any time to run the whole loop on demand, including
 | `ratelimit` | No throttling on your login route | Yes |
 | `db_rules` | SQL tables without row-level security, and policies that match every row. Judged by command and role: an anonymous read-only policy is low, writes or reads by every signed-in user are high | No |
 | `db_access` | `SECURITY DEFINER` functions without a fixed `search_path`; functions anyone can run; views without `security_invoker`; grants wider than the policies; public storage buckets and unscoped storage policies; service-role keys in front-end files | No |
+| `tenant_routes` | Reads your OpenAPI schema and tries **every** id-bearing route as tenant B against tenant A's ids, including file and signed-link routes. Writes (PUT/PATCH/POST/DELETE) only when you turn them on | Yes |
 | `access` | Role-based rules you write (caller, path, expected `denied` / `empty` / `allowed`), for apps with roles instead of two tenants | Yes |
 | `ai` | Model keys exposed to the browser, model output reaching `eval` or raw HTML, prompt-injection leaks (via canary strings) | Partly |
+| `supabase_audit` | **Read-only** Supabase/Postgres audit: weak auth settings in `supabase/config.toml`; an import of Supabase's own advisors (where leaked-password protection shows up); and, optionally, a live look at a database's catalog (RLS, policies, grants, functions, views, buckets) using SELECTs only | Partly (the DB part) |
+| `prod_config` | Production configuration lint, files only: debug mode, demo or auth-bypass switches, wildcard CORS, default or short secrets, plain http or localhost URLs, missing security headers, no rate limiting (heuristic). Never prints a secret's value | No |
 | static stage | semgrep (code patterns), gitleaks (secrets), trivy (vulnerable dependencies), when installed | No |
 
 Findings have five severities: `info`, `low`, `medium`, `high`, `critical`. Only findings at or above `fail_on` block the loop.
@@ -221,6 +224,13 @@ For any app where users own data (workspaces, shops, teams, accounts), create tw
 | `check_tokens` | `{}` | Which token each check uses, e.g. `{"injection": "anonymous", "upload": "staff"}`. Default is tenant A |
 | `access_checks` | `[]` | Role rules for the `access` check |
 | `injection_targets` | `[]` | Injection inputs that are not query strings; `{payload}` marks the spot, e.g. `{"path": "/rest/v1/items?name=eq.{payload}"}` or `{"path": "/rpc/search", "method": "POST", "body": {"q": "{payload}"}}` |
+| `tenant_a_ids` | `{}` | Tenant A's ids by parameter name, for routes the resource URLs do not reveal: `{"client_id": "abc"}` |
+| `openapi_path`, `openapi_file` | `"/openapi.json"`, `""` | Where `tenant_routes` reads the schema (URL on staging, or a local copy) |
+| `tenant_write_checks` | `false` | Let `tenant_routes` also try write routes as tenant B. **If isolation is broken a write can change or delete tenant A's data**: disposable staging data only |
+| `tenant_write_bodies` | `{}` | Valid bodies for write routes, by `"METHOD /path/{param}"`. Without one, a 400/422 is reported as inconclusive |
+| `supabase_advisors_file` | `""` | A JSON export of Supabase's advisors that you saved; guard only reads it |
+| `db_audit_url`, `db_audit_allowed_hosts` | `""`, `[]` | Read-only live catalog audit. `"ENV:NAME"` reads the connection string from the environment. Needs `psql`. Only hosts you list; production-looking hosts are refused; SELECTs inside a READ ONLY transaction. Use a read-only database role |
+| `launch_signoffs` | `{}` | Manual launch items **you** have verified: `{"backups_restore": {"by": "adi", "date": "2026-11-12", "note": "...", "expires": "2027-05-01"}}`. Guard never fills this in |
 | `max_probe_paths` | `5` | How many `probe_paths` the header, CORS, cookie and injection checks use. Paths beyond it are reported as unchecked |
 
 Example:
@@ -242,6 +252,16 @@ Example:
 ---
 
 ## Reading a report honestly
+
+`guard scan` prints one line first, and it never reads like a pass when most of the work did not run:
+
+```
+PARTIAL: 3 of 8 scanner checks did not run (semgrep, gitleaks, trivy); 11 live checks off; coverage 21%. 0 finding(s) in the checks that ran. This is NOT a pass.
+```
+
+`FAIL:` leads when something blocks, `COMPLETE:` only when every applicable check ran. `summary.md` opens with the same coverage percentage. **Exit code 4** means a required scanner (semgrep, gitleaks, trivy) did not run; pass `--allow-partial` to accept that on purpose (the report still says PARTIAL). Switching checks off yourself (`--no-live`, `--only`) shows in the table but does not cause exit 4. Checks that were skipped on the previous scan are listed first in the next report, with what happened to them.
+
+A check that crashes is reported as SKIPPED, never as clean, and never stops the rest of the scan.
 
 Every report and summary opens with a **What ran** table: each check is `ran`, `SKIPPED` (it should have run but could not, with the reason), `off (by choice)` (`--no-live`, `--only`) or `not applicable` (nothing to check, such as no `.sql` files). The summary says **CLEAN** only when no blocking issue remains *and* nothing was skipped. Otherwise it says "no blocking issues found, but this is not a full clean" and names what did not run, for example a missing secret scanner.
 
@@ -280,6 +300,7 @@ Everything is written to `guard_out/`:
 | `guard scan` | `0` | No blocking findings |
 | | `1` | Blocking findings exist |
 | | `2` | Config error |
+| | `4` | **Partial:** no blocking findings, but a required scanner did not run (override with `--allow-partial`) |
 | | `3` | **Scope blocked** (a host was not allowed) or **live scan refused** (config not marked set up, or placeholder host). Nothing was sent |
 | `guard gate` | `0` | Claude may stop |
 | | `2` | Claude is sent back to fix issues, or to present the summary |
@@ -298,6 +319,40 @@ Set these repository secrets for the live job: `GUARD_CONFIG_JSON` (the contents
 If the guard repo is private, other repos cannot install it without a token. Store a read-only personal access token as a secret and use it in the install URL.
 
 ---
+
+## Installing scanners from versions you pinned
+
+Guard never chooses a scanner version, a download address or a checksum. You write `scanners.lock` once, after checking each release yourself (start from `scanners.lock.example`). Then:
+
+```bash
+guard doctor --install            # gitleaks and trivy, only what the lock file says
+```
+
+Every download must be https, must match its SHA-256 in the lock file, and is deleted and refused on any mismatch, placeholder, missing platform or unlisted tool. Only the one named binary is taken from an archive. Tools go in `~/.guard/bin` (or `GUARD_TOOLS_DIR`) and are found automatically. semgrep is a Python package: install it yourself with a pinned `pip install --require-hashes`.
+
+## First run
+
+```bash
+guard init --base-url https://staging.myapp.com   # asks in a terminal if you leave it out; refuses production-looking hosts
+guard doctor                                        # what is installed, configured, missing
+guard doctor --explain tenant                       # what a check does and needs (works for every check)
+guard scan --dry-run                                # lists every request a live scan would send; sends none
+```
+
+`guard init` writes `GUARD_SETUP.md`, a step-by-step guide to creating the two test tenants and their tokens, and no longer invents routes. Live scans stay refused until you set `"setup_complete": true`.
+
+## Scanning only what changed
+
+```bash
+guard scan --diff-since <commit>     # or: --diff-since auto
+guard diff-base                      # prints the commit to compare against; works when the repo has no `main`
+```
+
+SQL and config checks still read the whole project for context (a table can be protected by a file you did not touch) and report only changed files. gitleaks and trivy cannot be limited to changed files and say so.
+
+## Launch readiness
+
+Every report ends with the manual items no scanner can check: an independent review or pen test, error alerts, a tested backup restore, a written incident plan, and who to notify if data leaks. Guard never marks them passed, and the launch status stays **NOT READY** until you sign each one off in `launch_signoffs` (who and when). A sign-off is your statement, shown as "not verified by guard". The coding agent is told never to add one.
 
 ## Safety model
 
@@ -321,6 +376,12 @@ guard/
 │   ├── coverage.py       # what ran / was skipped
 │   ├── sqlscan.py        # SQL statement splitter for the static checks
 │   ├── bodies.py         # is a response body empty?
+│   ├── readiness.py      # launch-readiness manual items
+│   ├── scanners.py       # pinned scanner installer (scanners.lock)
+│   ├── explain.py        # guard doctor --explain
+│   ├── dryrun.py         # guard scan --dry-run
+│   ├── openapi.py        # OpenAPI route discovery for tenant_routes
+│   ├── gitdiff.py        # diff-base and --diff-since
 │   ├── claude_setup.py   # `guard setup`: installs /guard, rules and hook for Claude Code
 │   ├── assets.py         # the text that setup installs
 │   ├── config.py         # settings and the starter config
@@ -331,7 +392,7 @@ guard/
 │   ├── findings.py       # the Finding record
 │   ├── files.py          # source-file walker
 │   └── checks/           # one file per check
-├── tests/                # 174 unit tests
+├── tests/                # 315 unit tests
 ├── .github/workflows/guard.yml
 ├── Dockerfile
 ├── TRUST.md              # what guard does and does not protect against
