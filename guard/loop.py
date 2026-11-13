@@ -12,9 +12,10 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .coverage import Coverage, gaps, is_complete, to_markdown_table
+from . import readiness
+from .coverage import Coverage, gaps, is_complete, percent, to_markdown_table
 from .findings import Finding, SEVERITIES, severity_rank
-from .report import accepted_lines
+from .report import accepted_lines, report_skipped_first
 
 
 def fid(f: Finding) -> str:
@@ -26,6 +27,12 @@ def _load(out: Path) -> dict:
         return json.loads((out / "history.json").read_text())
     except (OSError, ValueError):
         return {"runs": [], "session": {"seen": {}, "rounds": 0, "last_ids": []}, "last_clean": False}
+
+
+def previous_skipped(out_dir: str) -> dict:
+    """{name: reason} for the checks that were skipped on the previous scan, so the next report can list them
+    first and say which of them ran this time."""
+    return _load(Path(out_dir)).get("last_skipped", {})
 
 
 def record_run(out_dir: str, findings: list[Finding], fail_on: str,
@@ -49,6 +56,8 @@ def record_run(out_dir: str, findings: list[Finding], fail_on: str,
     if blocking:
         s["had_blocking"] = True
     h["last_clean"] = not blocking
+    prev_skipped = h.get("last_skipped", {})
+    h["last_skipped"] = {c.name: c.detail for c in (coverage or []) if c.status == "skipped"}
     h["runs"].append({"time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                       "total": len(tracked), "blocking": len(blocking)})
     h["runs"] = h["runs"][-50:]
@@ -59,6 +68,8 @@ def record_run(out_dir: str, findings: list[Finding], fail_on: str,
     coverage = coverage or []
     return {
         "coverage": coverage,
+        "coverage_percent": percent(coverage),
+        "prev_skipped": prev_skipped,
         "complete": is_complete(coverage),
         "gaps": gaps(coverage),
         "accepted": accepted,
@@ -90,7 +101,9 @@ def write_fix_tasks(out_dir: str, result: dict) -> Path:
              "summary with the reason. Only the project owner may accept a risk, by adding an entry (check, title "
              "or target, reason, owner, optional expiry) to `accepted_risks` in guard.config.json; propose the "
              "entry to them instead of adding it yourself. Accepted risks stay visible in the reports.",
-             "4. When finished, stop. The check runs again automatically (or run `guard scan`).", ""]
+             "4. Never sign off a launch-readiness item yourself (`launch_signoffs`). Those are the owner's "
+             "statements about things guard cannot check.",
+             "5. When finished, stop. The check runs again automatically (or run `guard scan`).", ""]
     if not result["blocking"]:
         lines += ["No blocking issues. Nothing to fix.", ""]
     for n, f in enumerate(result["blocking"], 1):
@@ -122,9 +135,12 @@ def _status(result: dict, fail_on: str) -> str:
 
 def write_summary(out_dir: str, result: dict, fail_on: str) -> Path:
     p = Path(out_dir) / "summary.md"
+    pct = result.get("coverage_percent")
     lines = ["# Security check summary", "", f"**Status:** {_status(result, fail_on)}",
+             f"**Coverage:** {pct}% of applicable checks ran" if pct is not None else "**Coverage:** n/a",
              f"**Scan rounds in this session:** {result['rounds']}",
              f"**Issues found in total:** {result['seen_total']}", ""]
+    lines += report_skipped_first(result.get("prev_skipped"), result.get("coverage", []))
     lines += to_markdown_table(result.get("coverage", []))
     if result["fixed"]:
         lines += [f"## Fixed ({len(result['fixed'])})"]
@@ -137,6 +153,7 @@ def write_summary(out_dir: str, result: dict, fail_on: str) -> Path:
         lines += [f"## Left for you to decide ({len(result['open_other'])})",
                   "Below the failure threshold, so not auto-fixed:"] + [_line(f) for f in result["open_other"]] + [""]
     lines += accepted_lines(result.get("accepted"))
+    lines += readiness.to_markdown(result.get("readiness") or readiness.items({}))
     if result.get("notes"):
         lines += ["## Notes"] + [f"- {n}" for n in result["notes"]] + [""]
     lines += ["## What this did not check",

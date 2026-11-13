@@ -27,8 +27,8 @@ _REST = """2. If `guard.config.json` does not exist, run `guard init`.
 3. Make sure `.gitignore` contains the lines `guard_out/` and `guard.config.json`.
    Add any that are missing.
 
-Round 0: review only the changed code, to save usage. Use `git diff` against the main branch
-(or `git diff HEAD~5` / the files changed on this branch if there is no main). Look for bugs,
+Round 0: review only the changed code, to save usage. Run `guard diff-base` to get the commit to
+compare against (it works even when the repo has no `main`), then `git diff <that commit>`. Look for bugs,
 unhandled errors, edge cases, missing input validation and authorization gaps
 (data not scoped to the caller, missing auth checks, client-trusted ids). Fix what you find.
 If there is no diff to review, do NOT read the whole codebase; rely on the scan and tell me
@@ -37,12 +37,15 @@ I can ask for a full review. Do not run the project's full test suite unless you
 Then repeat until clean:
 1. Run `guard scan --no-live`. Only run live checks (`guard scan`) if
    `guard.config.json` points at a staging host that I have confirmed is safe.
-   Never target production.
+   Never target production. Exit codes: 0 fine, 1 blocking issues, 2 config error, 3 refused (nothing
+   was sent), 4 PARTIAL (a required scanner did not run). The first line says PARTIAL when much of
+   the scan did not run: that is not a pass. Never add `--allow-partial` yourself.
 2. Read `guard_out/fix_tasks.md`.
 3. If there are no blocking issues, stop the loop.
 4. Otherwise fix every blocking issue at its root cause. Do not edit guard,
    its config or scope, and do not add ignore comments to hide findings. If a finding is a false
    positive or a deliberate choice, tell me and propose an `accepted_risks` entry; I add it myself.
+   Never add `launch_signoffs` entries either: those are my statements about things guard cannot check.
 5. Go back to step 1 so the fixes are tested again.
 
 Stop early if a round fixes nothing (no progress) or after 5 rounds.
@@ -53,6 +56,8 @@ Finish with a plain-English summary for me (use `guard_out/summary.md`):
 - how many rounds it took and whether the final scan is clean
 - anything still open, and why, with your recommendation
 - what could not be verified, including every check marked SKIPPED in the table at the top of the summary
+- the coverage percentage, and whether the result was PARTIAL
+- that the launch-readiness manual items (listed at the end of the summary) are still open, unless I signed them off
 """
 
 
@@ -87,6 +92,8 @@ RULES_MD = f"""{RULES_START}
 - Validate all input on the server. Return generic error messages; no stack traces.
 - Secrets come from environment variables, never from code or committed files.
 - Never run live checks against production. Staging with dummy data only.
+- A scan that did not run everything is PARTIAL, not clean. Never add `--allow-partial`,
+  `accepted_risks` or `launch_signoffs` entries yourself; propose them to the user.
 {RULES_END}
 """
 
