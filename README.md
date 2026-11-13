@@ -392,7 +392,7 @@ guard/
 │   ├── findings.py       # the Finding record
 │   ├── files.py          # source-file walker
 │   └── checks/           # one file per check
-├── tests/                # 315 unit tests
+├── tests/                # 323 unit tests
 ├── .github/workflows/guard.yml
 ├── Dockerfile
 ├── TRUST.md              # what guard does and does not protect against

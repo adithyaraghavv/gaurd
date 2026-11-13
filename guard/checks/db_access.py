@@ -211,7 +211,31 @@ def grant_findings(stmts: list[tuple[str, str]], enabled: set[str]) -> list[Find
 
 
 # ---- storage ---------------------------------------------------------------------------------------------------
-def storage_findings(stmts: list[tuple[str, str]]) -> list[Finding]:
+# `update storage.buckets set <col> = <value> [where id = 'name']`, also when it sits inside a quoted string in a DO
+# block (EXECUTE '...'), where every quote is doubled.
+BUCKET_UPDATE = re.compile(
+    r"update\s+storage\.buckets\s+set\s+(file_size_limit|public)\s*=\s*([^\s,;']+)"
+    r"(?:[^;]{0,200}?\bwhere\s+id\s*=\s*'{1,2}([^']+)'{1,2})?", re.I)
+
+
+def later_bucket_settings(stmts: list[tuple[str, str]]) -> dict[str, set[str]]:
+    """Bucket settings applied by an UPDATE anywhere in the migrations. A bucket created without a size limit (or
+    public) in an early migration is often fixed in a later one, so the early insert alone proves nothing.
+    Returns {"limited": ids with a size limit set, "private": ids made private}; "*" means every bucket (no WHERE).
+    File order is not simulated: any such update counts."""
+    out: dict[str, set[str]] = {"limited": set(), "private": set()}
+    for _, st in stmts:
+        for m in BUCKET_UPDATE.finditer(st):
+            col, val, bid = m.group(1).lower(), m.group(2).lower(), (m.group(3) or "*")
+            if col == "file_size_limit" and val != "null":
+                out["limited"].add(bid)
+            elif col == "public" and val == "false":
+                out["private"].add(bid)
+    return out
+
+
+def storage_findings(stmts: list[tuple[str, str]], later: dict[str, set[str]] | None = None) -> list[Finding]:
+    later = later or {"limited": set(), "private": set()}
     out: list[Finding] = []
     for path, st in stmts:
         p = db_rules.parse_policy(st)
@@ -227,11 +251,13 @@ def storage_findings(stmts: list[tuple[str, str]]) -> list[Finding]:
             cols = [c.strip().lower() for c in m.group(1).split(",")]
             vals = split_top_level(m.group(2))
             bid = vals[0].strip("' ") if vals else "?"
-            if len(vals) == len(cols) and ("file_size_limit" not in cols or vals[cols.index("file_size_limit")].lower() == "null"):
+            unlimited = len(vals) == len(cols) and ("file_size_limit" not in cols or vals[cols.index("file_size_limit")].lower() == "null")
+            if unlimited and not ({bid, "*"} & later["limited"]):
                 out.append(Finding("db_access", "low", f"Storage bucket '{bid}' has no file size limit",
                                    "Without a limit one user can upload very large files (cost and abuse).", path,
                                    fix="Set file_size_limit on the bucket (and allowed_mime_types). " + ACCEPT))
-            if "public" in cols and len(vals) == len(cols) and vals[cols.index("public")].lower() == "true":
+            if ("public" in cols and len(vals) == len(cols) and vals[cols.index("public")].lower() == "true"
+                    and not ({bid, "*"} & later["private"])):
                 out.append(Finding("db_access", "medium", f"Storage bucket '{bid}' is public",
                                    "Anyone with a file's URL can read it without signing in.", path,
                                    fix="Make the bucket private and serve files through short-lived signed URLs. "
@@ -298,6 +324,6 @@ def run(cfg, http) -> list[Finding]:
     for _, sql in files:
         enabled |= db_rules.protected_tables(sql)
     sql_findings = (function_findings(stmts) + view_findings(stmts) + grant_findings(stmts, enabled)
-                    + storage_findings(stmts))
+                    + storage_findings(stmts, later_bucket_settings(stmts)))
     findings += [f for f in sql_findings if is_changed(f.target)]  # --diff-since: whole-project context, changed-file report
     return findings

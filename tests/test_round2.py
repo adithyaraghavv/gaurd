@@ -663,6 +663,59 @@ class LiveCatalogTests(unittest.TestCase):
         self.assertNotIn("buckets", calls)
 
 
+class LaterBucketSettingTests(unittest.TestCase):
+    """A bucket created without a limit is often fixed by a later migration. Found on a real project, where the
+    later update was hidden inside a DO block as a quoted string."""
+    INSERT = "insert into storage.buckets (id, name, public) values ('photos', 'photos', false);"
+    DO_BLOCK = ("do $$ begin if exists (select 1 from information_schema.columns where column_name = 'file_size_limit') "
+                "then execute 'update storage.buckets set file_size_limit = 52428800 where id = ''photos'''; "
+                "end if; end $$;")
+
+    def check(self, *sql):
+        from guard.checks import db_access
+        from guard.sqlscan import split_statements
+        stmts = [("m.sql", s) for text in sql for s in split_statements(text)]
+        return titles(db_access.storage_findings(stmts, db_access.later_bucket_settings(stmts)))
+
+    def test_without_a_later_update_the_missing_limit_is_reported(self):
+        self.assertEqual(self.check(self.INSERT), ["Storage bucket 'photos' has no file size limit"])
+
+    def test_a_later_plain_update_counts(self):
+        self.assertEqual(self.check(self.INSERT, "update storage.buckets set file_size_limit = 5242880 where id = 'photos';"), [])
+
+    def test_a_later_update_inside_a_do_block_string_counts_exactly_like_the_real_project(self):
+        self.assertEqual(self.check(self.INSERT, self.DO_BLOCK), [])
+
+    def test_an_update_without_where_applies_to_every_bucket(self):
+        self.assertEqual(self.check(self.INSERT, "update storage.buckets set file_size_limit = 1000;"), [])
+
+    def test_setting_the_limit_to_null_does_not_count(self):
+        self.assertEqual(len(self.check(self.INSERT, "update storage.buckets set file_size_limit = null where id = 'photos';")), 1)
+
+    def test_a_limit_on_a_different_bucket_does_not_count(self):
+        self.assertEqual(len(self.check(self.INSERT, "update storage.buckets set file_size_limit = 1000 where id = 'other';")), 1)
+
+    def test_a_later_update_that_makes_a_public_bucket_private_counts(self):
+        pub = "insert into storage.buckets (id, name, public, file_size_limit) values ('p', 'p', true, 100);"
+        self.assertEqual(self.check(pub), ["Storage bucket 'p' is public"])
+        self.assertEqual(self.check(pub, "update storage.buckets set public = false where id = 'p';"), [])
+        self.assertEqual(self.check(pub, "update storage.buckets set public = true where id = 'p';"),
+                         ["Storage bucket 'p' is public", "Storage bucket made public"])
+
+    def test_the_whole_check_reads_across_files(self):
+        from guard.checks import db_access
+        with tempfile.TemporaryDirectory() as d:
+            m = Path(d) / "supabase" / "migrations"
+            m.mkdir(parents=True)
+            (m / "0004.sql").write_text(self.INSERT)
+            (m / "0021.sql").write_text(self.DO_BLOCK)
+            found = [x.title for x in db_access.run(Config(source_dir=d), None) if "size limit" in x.title]
+            self.assertEqual(found, [])
+            (m / "0021.sql").unlink()
+            found = [x.title for x in db_access.run(Config(source_dir=d), None) if "size limit" in x.title]
+            self.assertEqual(found, ["Storage bucket 'photos' has no file size limit"])
+
+
 class GrantMergeTests(unittest.TestCase):
     def test_one_finding_per_table_and_role_listing_every_privilege(self):
         from guard.checks import db_access
